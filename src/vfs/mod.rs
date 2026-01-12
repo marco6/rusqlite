@@ -19,6 +19,8 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use std::{mem, slice};
 
+use crate::Connection;
+
 /// A specialised result type for [`Vfs`] operations.
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -343,12 +345,12 @@ pub trait VfsFile {
         Ok(())
     }
 
-    // /// Sets the parent connection.
-    // ///
-    // /// See [SQLITE_FCNTL_PDB](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlpdb)
-    // fn set_parent_connection<'a>(&'a mut self, conn: Connection<'a>) {
-    //     let _ = conn;
-    // }
+    /// Sets the parent connection.
+    ///
+    /// See [SQLITE_FCNTL_PDB](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlpdb)
+    fn set_parent_connection(&mut self, conn: Connection) {
+        let _ = conn;
+    }
 
     /// Begins an atomic-write sequence.
     ///
@@ -1536,14 +1538,9 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         }
         sqlite3::SQLITE_FCNTL_COMMIT_PHASETWO => file.commit_phase_two().to_result_code().into_rc(),
         sqlite3::SQLITE_FCNTL_PDB => {
-            // TODO: this is blocked on rusqlite as a non-owning connection still changes the connection (it unregisters all hooks on drop)
-            // See https://github.com/rusqlite/rusqlite/issues/1784
-            // TODO: we should wrap the rusqlite::Connection in a newtype that includes a lifetime so that implementations cannot leak it.
-            // Something like NonOwningConnection<'conn>
-
-            // let pdb = unsafe { arg.cast::<*mut sqlite3>().read() };
-            // let connection = unsafe { rusqlite::Connection::from_handle(pdb) }.unwrap();
-            // file.set_parent_connection(connection);
+            let pdb = unsafe { arg.cast::<*mut sqlite3::sqlite3>().read() };
+            let connection = unsafe { Connection::from_handle(pdb) }.unwrap();
+            file.set_parent_connection(connection);
             sqlite3::SQLITE_OK
         }
         sqlite3::SQLITE_FCNTL_BEGIN_ATOMIC_WRITE => file.begin_atomic().to_result_code().into_rc(),
