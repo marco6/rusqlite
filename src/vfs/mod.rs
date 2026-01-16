@@ -171,7 +171,7 @@ pub trait Vfs: Sync {
     /// Writes the full pathname of a file to the output buffer.
     fn write_full_path(&self, name: VfsPath<'_>, out: &mut [u8]) -> Result<usize>;
     /// Returns the last error code.
-    fn last_error(&self) -> ResultCode;
+    fn last_error(&self) -> i32;
 
     /// Fills a buffer with random bytes.
     fn fill_random_bytes(&self, out: &mut [u8]) -> Result<()> {
@@ -1345,7 +1345,7 @@ unsafe extern "C" fn x_get_last_error<T: Vfs>(
     _: *mut c_char,
 ) -> i32 {
     let storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
-    storage.vfs.last_error().into_rc()
+    storage.vfs.last_error()
 }
 
 unsafe extern "C" fn x_close<T: Vfs>(file: *mut sqlite3_file) -> c_int {
@@ -1815,8 +1815,8 @@ mod tests {
             Ok(SystemTime::now())
         }
 
-        fn last_error(&self) -> ResultCode {
-            ResultCode::OK
+        fn last_error(&self) -> i32 {
+            0
         }
 
         fn exists(&self, _name: VfsPath<'_>) -> Result<bool> {
