@@ -3,70 +3,40 @@ use core::ffi::c_int;
 use core::ffi::CStr;
 use core::fmt;
 
-/// Stores a SQLite result code.
-#[derive(Copy, Clone, Debug)]
-pub struct ResultCode(c_int);
-
-impl ResultCode {
-    /// Represents success.
-    pub const OK: Self = Self(super::SQLITE_OK);
-
-    /// Creates a new SQLite result code from a raw result code.
-    ///
-    /// Returns `None` if the passed result code is zero.
-    pub fn from_rc(rc: c_int) -> Self {
-        ResultCode(rc)
-    }
-
-    /// Returns the raw result code.
-    pub fn into_rc(self) -> c_int {
-        self.0
-    }
-
-    /// Returns whether the code is [`Self::OK`].
-    pub fn is_ok(&self) -> bool {
-        self.0 == super::SQLITE_OK
-    }
-}
-
-impl fmt::Display for ResultCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self(code) = self;
-        write!(f, "{code} ({})", code_to_str(*code))
-    }
-}
-
-impl From<Error> for ResultCode {
-    fn from(err: Error) -> Self {
-        Self(err.extended_code)
-    }
-}
-
-
-impl From<ResultCode> for Result<(), Error> {
-    fn from(code: ResultCode) -> Self {
-        if code.is_ok() {
-            return Ok(());
-        }
-        Err(Error::new(code.0))
-    }
-}
-
-/// Extension trait to convert a [`Result`] to a [`ResultCode`].
-pub trait ToResultCodeExt {
-    /// Convert `self` to a [`ResultCode`].
+/// Extension trait to convert a [`Result`] to an SQLite result code ([`c_int`]).
+pub trait IntoResultCodeExt {
+    /// Convert `self` to an SQLite result code ([`c_int`]).
     ///
     /// If `self` is:
-    /// - `Ok(_)`, this function returns [`ResultCode::OK`]
-    /// - `Err(err)`, this function returns `err`.
-    fn to_result_code(self) -> ResultCode;
+    /// - `Ok(_)`, this function returns `SQLITE_OK`.
+    /// - `Err(err)`, this function returns `extended_code`.
+    fn into_rc(self) -> c_int;
 }
 
-impl<T> ToResultCodeExt for Result<T, Error> {
-    fn to_result_code(self) -> ResultCode {
+impl<T> IntoResultCodeExt for Result<T, Error> {
+    fn into_rc(self) -> c_int {
         match self {
-            Ok(_) => ResultCode::OK,
-            Err(e) => ResultCode::from_rc(e.extended_code),
+            Ok(_) => super::SQLITE_OK,
+            Err(e) => e.extended_code,
+        }
+    }
+}
+
+pub trait FromResultCodeExt {
+    /// Convert an SQLite result code ([`c_int`]) to a [`Result`].
+    ///
+    /// If `code` is:
+    /// - `SQLITE_OK`, this function returns `Ok(())`.
+    /// - any other value, this function returns `Err(Error::new(code))`.
+    fn from_rc(code: c_int) -> Result<(), Error>;
+}
+
+impl FromResultCodeExt for Result<(), Error> {
+    fn from_rc(code: c_int) -> Result<(), Error> {
+        if code == super::SQLITE_OK {
+            Ok(())
+        } else {
+            Err(Error::new(code))
         }
     }
 }
@@ -261,5 +231,12 @@ mod test {
             let s = format!("{err}");
             assert!(!s.is_empty());
         }
+    }
+
+    #[test]
+    fn test_result_conversion() {
+        assert_eq!(Ok(()).into_rc(), SQLITE_OK);
+        assert_eq!(Result::<(), Error>::Err(Error::new(SQLITE_ERROR)).into_rc(), SQLITE_ERROR);
+        assert!(!Result::<(), Error>::Err(Error::new(SQLITE_ERROR)).is_ok());
     }
 }
