@@ -10,6 +10,7 @@ use std::ffi::{c_char, c_int, CStr, CString, OsStr};
 use std::fmt::{self, Display};
 use std::marker::PhantomData;
 use std::num::NonZero;
+use std::ops::Deref;
 use std::os::raw::c_void;
 use std::os::unix::ffi::OsStrExt;
 use std::ptr::{self, NonNull};
@@ -19,7 +20,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use std::{mem, slice};
 
-use crate::Connection;
+use crate::{Connection, vfs};
 
 /// A specialised result type for [`Vfs`] operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -799,6 +800,14 @@ pub enum AtomicWrite {
 
 /// RAII guard that unregisters a VFS on drop.
 pub struct VfsRegistrationGuard<V>(Arc<VfsStorage<V>>);
+
+impl<V> Deref for VfsRegistrationGuard<V> {
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.vfs
+    }
+}
 
 impl<V> Drop for VfsRegistrationGuard<V> {
     fn drop(&mut self) {
