@@ -231,7 +231,7 @@ pub trait VfsFile {
     /// Reads from the file at an offset.
     ///
     /// See [xRead](https://www.sqlite.org/c3ref/io_methods.html#xRead).
-    fn read_at(&mut self, buf: &mut [u8], offset: u64) -> Result<()>;
+    fn read_at(&mut self, buf: &mut [u8], offset: u64) -> Result<usize>;
 
     /// Writes to the file at an offset.
     ///
@@ -1370,7 +1370,12 @@ unsafe extern "C" fn x_read<T: Vfs>(
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
     let file = storage.file();
     let buf = unsafe { slice::from_raw_parts_mut(data as *mut u8, amount as usize) };
-    file.read_at(buf, offset as u64).into_rc()
+    file.read_at(buf, offset as u64)
+        .and_then(|size| {
+            buf[size..].fill(0);
+            Ok(())
+        })
+        .into_rc()
 }
 
 unsafe extern "C" fn x_write<T: Vfs>(
@@ -1830,7 +1835,7 @@ mod tests {
     struct DummyFile;
 
     impl VfsFile for DummyFile {
-        fn read_at(&mut self, buf: &mut [u8], _offset: u64) -> Result<()> {
+        fn read_at(&mut self, buf: &mut [u8], _offset: u64) -> Result<usize> {
             buf.fill(0);
             Err(Error::new(sqlite3::SQLITE_IOERR_SHORT_READ))
         }
