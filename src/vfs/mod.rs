@@ -293,7 +293,7 @@ pub trait VfsFile {
     /// See [SQLITE_FCNTL_SIZE_HINT](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlsizehint).
     fn hint_size(&mut self, size: i64) -> Result<()> {
         let _ = size;
-        Ok(())
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
     /// Hints that subsequent writes overwrite existing content.
@@ -309,7 +309,7 @@ pub trait VfsFile {
     /// See [SQLITE_FCNTL_CHUNK_SIZE](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlchunksize).
     fn set_chunk_size(&mut self, size: u32) -> Result<()> {
         let _ = size;
-        Ok(())
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
     /// Handles PRAGMA forwarding.
@@ -326,7 +326,7 @@ pub trait VfsFile {
     /// See [SQLITE_FCNTL_MMAP_SIZE](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlmmapsize).
     fn set_mmap_size(&mut self, size: u64) -> Result<()> {
         let _ = size;
-        Ok(())
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
     /// Gets the max mmap size.
