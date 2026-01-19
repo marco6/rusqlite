@@ -55,7 +55,7 @@ pub struct OpenFlags {
 
 impl OpenFlags {
     /// Creates `OpenFlags` from raw flags.
-    fn new(bits: c_int) -> Self {
+    pub fn new(bits: c_int) -> Self {
         let open_flags = Self { bits };
 
         // The following checks match SQLite exactly.
@@ -132,7 +132,6 @@ impl OpenFlags {
     }
 
     /// Returns whether the autoproxy locking style should be used.
-
     pub fn autoproxy(&self) -> bool {
         (self.bits & sqlite3::SQLITE_OPEN_AUTOPROXY) != 0
     }
@@ -159,21 +158,37 @@ pub trait Vfs: Sync {
     type File: VfsFile;
 
     /// Opens a file. Returns the file and the actual flags used.
+    /// 
+    /// See [xOpen](https://www.sqlite.org/c3ref/vfs.html).
     fn open(&self, name: Option<VfsPath<'_>>, flags: OpenFlags) -> Result<(Self::File, OpenFlags)>;
     /// Deletes a file, optionally syncing the directory afterward.
+    /// 
+    /// See [xDelete](https://www.sqlite.org/c3ref/vfs.html).
     fn delete(&self, name: VfsPath<'_>, sync_dir: bool) -> Result<()>;
     /// Checks if a file exists.
+    /// 
+    /// See [xAccess](https://www.sqlite.org/c3ref/vfs.html).
     fn exists(&self, name: VfsPath<'_>) -> Result<bool>;
     /// Checks if a file is readable.
+    /// 
+    /// See [xAccess](https://www.sqlite.org/c3ref/vfs.html).
     fn can_read(&self, name: VfsPath<'_>) -> Result<bool>;
     /// Checks if a file is writable.
+    /// 
+    /// See [xAccess](https://www.sqlite.org/c3ref/vfs.html).
     fn can_write(&self, name: VfsPath<'_>) -> Result<bool>;
     /// Writes the full pathname of a file to the output buffer.
+    /// 
+    /// See [xFullPathname](https://www.sqlite.org/c3ref/vfs.html).
     fn write_full_path(&self, name: VfsPath<'_>, out: &mut [u8]) -> Result<usize>;
     /// Returns the last error code.
+    /// 
+    /// See [xGetLastError](https://www.sqlite.org/c3ref/vfs.html).
     fn last_error(&self) -> i32;
 
     /// Fills a buffer with random bytes.
+    /// 
+    /// See [xRandomness](https://www.sqlite.org/c3ref/vfs.html).
     fn fill_random_bytes(&self, out: &mut [u8]) -> Result<()> {
         let mut rng = rand::rng();
         rng.fill_bytes(out);
@@ -181,11 +196,15 @@ pub trait Vfs: Sync {
     }
 
     /// Sleeps for the given duration.
+    /// 
+    /// See [xSleep](https://www.sqlite.org/c3ref/vfs.html).
     fn sleep(&self, duration: Duration) {
         thread::sleep(duration);
     }
 
     /// Returns the current system time.
+    /// 
+    /// See [xCurrentTimeInt64](https://www.sqlite.org/c3ref/vfs.html).
     fn now(&self) -> Result<SystemTime> {
         Ok(SystemTime::now())
     }
@@ -348,7 +367,7 @@ pub trait VfsFile {
 
     /// Sets the parent connection.
     ///
-    /// See [SQLITE_FCNTL_PDB](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlpdb)
+    /// See [SQLITE_FCNTL_PDB](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlpdb).
     fn set_parent_connection(&mut self, conn: Connection) {
         let _ = conn;
     }
@@ -357,14 +376,14 @@ pub trait VfsFile {
     ///
     /// See [SQLITE_FCNTL_BEGIN_ATOMIC_WRITE](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlbeginatomicwrite).
     fn begin_atomic(&mut self) -> Result<()> {
-        Ok(())
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
     /// Commits an atomic-write sequence.
     ///
     /// See [SQLITE_FCNTL_COMMIT_ATOMIC_WRITE](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlcommitatomicwrite).
     fn commit_atomic(&mut self) -> Result<()> {
-        Ok(())
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
     /// Rolls back an atomic-write sequence.
@@ -577,7 +596,7 @@ impl WalLock {
     }
 
     /// Returns true if the given read lock index is included.
-    /// index must be in 0..5
+    /// index must be in 0..5.
     pub fn read(&self, index: usize) -> bool {
         if index >= 5 {
             return false;
@@ -603,9 +622,9 @@ pub trait VfsFetchFile: VfsFile {
 
 /// Options for syncing a file.
 pub struct SyncOptions {
-    /// True for Mac OS X style fullsync, false for Unix style fsync
+    /// True for Mac OS X style fullsync, false for Unix style fsync.
     pub full: bool,
-    /// True to sync only the data of the file and not its inode (fdatasync)
+    /// True to sync only the data of the file and not its inode (fdatasync).
     pub data_only: bool,
 }
 
@@ -830,12 +849,13 @@ pub struct VfsSupport<T, W = NoSupport, F = NoSupport> {
 }
 
 /// Extension trait to provide a pre-computed [`Vfs`] method table.
-pub trait VfsMethodTableExt {
+/// This is only necessary due to Rust's current lack of const generics over types.
+trait VfsMethodTableExt {
     /// The available methods derived from a [`VfsSupport`].
     const METHODS: sqlite3_io_methods;
 }
 
-// Base implementation without WAL and Fetch support
+// Base implementation without WAL and Fetch support.
 impl<T> VfsSupport<T, NoSupport, NoSupport>
 where
     T: Vfs,
@@ -951,7 +971,7 @@ pub struct VfsRegistration<T, M> {
     vfs: T,
     max_pathlen: usize,
     make_default: bool,
-    method_table: std::marker::PhantomData<M>,
+    method_table: PhantomData<M>,
 }
 
 impl<T: Vfs> VfsRegistration<T, VfsSupport<T>> {
@@ -961,7 +981,7 @@ impl<T: Vfs> VfsRegistration<T, VfsSupport<T>> {
             vfs,
             max_pathlen: 512,
             make_default: false,
-            method_table: std::marker::PhantomData,
+            method_table: PhantomData,
         }
     }
 }
@@ -1057,7 +1077,7 @@ where
             vfs,
             max_pathlen,
             make_default,
-            method_table: std::marker::PhantomData,
+            method_table: PhantomData,
         }
     }
 }
@@ -1078,7 +1098,7 @@ where
             vfs,
             max_pathlen,
             make_default,
-            method_table: std::marker::PhantomData,
+            method_table: PhantomData,
         }
     }
 }
