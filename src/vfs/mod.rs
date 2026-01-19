@@ -1515,31 +1515,42 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
                 None
             };
             match file.pragma(name, arg) {
-                Ok(Some(result_msg)) => {
-                    unsafe {
-                        args[0] = sqlite3::sqlite3_mprintf(
-                            c"%*s".as_ptr() as *const c_char,
-                            result_msg.len(),
-                            result_msg.as_bytes(),
-                        );
-                    }
+                Ok(result) => {
+                    // Fun stuff: when a custom PRAGMA returns no result, but still succeeds,
+                    // SQLite uses the result as both the result of the PRAGMA *and* the column name.
+                    // So, if NULL, SQLite will return a column with `NULL` name and a `NULL` value,
+                    // and yet the column count will be 1. This makes an assertion fail from rusqlite
+                    // which expects the column name to be non-null as SQLite documentation states:
+                    //
+                    //   If sqlite3_malloc() fails during the processing of either routine (for
+                    //   example during a conversion from UTF-8 to UTF-16) then a NULL pointer is returned.
+                    //
+                    // Admittedly, the above does not explicitly say that the column name cannot be NULL,
+                    // but it is still unexpected IMHO.
+                    // Now, clearly this is a SQLite quirk/documentation bug, but to work around it, we
+                    // can just use
+                    //  - the argument, if present (like `PRAGMA journal_mode = XXX`` does)
+                    //  - or the pragma name
+                    // as the column name.
+                    let result_string = result.as_deref().or(arg).unwrap_or(name);
+                    args[0] = unsafe {
+                        sqlite3::sqlite3_mprintf(
+                            c"%.*s".as_ptr() as *const c_char,
+                            result_string.len(),
+                            result_string.as_bytes(),
+                        )
+                    };
                     sqlite3::SQLITE_OK
                 }
-                Ok(None) => sqlite3::SQLITE_OK,
-                Err(PragmaError {
-                    code,
-                    message: None,
-                }) => code.extended_code,
-                Err(PragmaError {
-                    code,
-                    message: Some(err_msg),
-                }) => {
-                    unsafe {
-                        args[0] = sqlite3::sqlite3_mprintf(
-                            c"%*s".as_ptr() as *const c_char,
-                            err_msg.len(),
-                            err_msg.as_bytes(),
-                        );
+                Err(PragmaError { code, message }) => {
+                    if let Some(result) = message {
+                        args[0] = unsafe {
+                            sqlite3::sqlite3_mprintf(
+                                c"%.*s".as_ptr() as *const c_char,
+                                result.len(),
+                                result.as_bytes(),
+                            )
+                        };
                     }
                     code.extended_code
                 }
