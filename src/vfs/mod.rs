@@ -4,6 +4,7 @@ use libsqlite3_sys::{
     IntoResultCodeExt,
 };
 use rand::RngCore;
+use core::panic;
 use std::borrow::Cow;
 use std::error;
 use std::ffi::{c_char, c_int, CStr, CString, OsStr};
@@ -615,7 +616,7 @@ impl WalLock {
     /// index must be in 0..5.
     pub fn read(&self, index: usize) -> bool {
         if index >= 5 {
-            return false;
+            panic!("internal error: wal read lock index out of range");
         }
         self.mask & (1 << (Self::WAL_READ_LOCK_0 + index)) != 0
     }
