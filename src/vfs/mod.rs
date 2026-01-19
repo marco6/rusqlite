@@ -1103,6 +1103,7 @@ where
     }
 }
 
+/// Stores a registered VFS instance with its SQLite metadata and lifecycle management.
 struct VfsStorage<V> {
     base: sqlite3_vfs,
     name: CString,
