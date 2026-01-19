@@ -427,6 +427,21 @@ pub trait VfsFile {
         let _ = persist;
     }
 
+    /// Gets powersafe overwrite property for the filesystem.
+    /// 
+    /// See [SQLITE_FCNTL_POWERSAFE_OVERWRITE](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlpowersafeoverwrite).
+    fn is_powersafe_overwrite(&self) -> bool {
+        false
+    }
+
+    /// Sets powersafe overwrite property for the filesystem.
+    /// 
+    /// See [SQLITE_FCNTL_POWERSAFE_OVERWRITE](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlpowersafeoverwrite).
+    fn set_powersafe_overwrite(&mut self, powersafe: bool) -> Result<()> {
+        let _ = powersafe;
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
+    }
+
     /// Hints WAL lock behavior.
     ///
     /// See [SQLITE_FCNTL_WAL_BLOCK](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlwalblock).
@@ -1574,7 +1589,6 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             *timeout = old_timeout.as_millis() as i32;
             file.set_lock_timeout(new_timeout).into_rc()
         }
-
         sqlite3::SQLITE_FCNTL_BUSYHANDLER => {
             let args = unsafe { slice::from_raw_parts(arg.cast::<*mut c_void>(), 2) };
             let busy_handler: extern "C" fn(*mut c_void) -> c_int =
@@ -1587,12 +1601,10 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             file.set_busy_handler(wrapped_handler);
             sqlite3::SQLITE_OK
         }
-
         sqlite3::SQLITE_FCNTL_NULL_IO => {
             storage.state = FileStorageState::Closed;
             sqlite3::SQLITE_OK
         }
-
         sqlite3::SQLITE_FCNTL_PERSIST_WAL => {
             let persist = unsafe { arg.cast::<i32>().as_mut() }.unwrap();
             if *persist < 0 {
@@ -1601,6 +1613,14 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             }
             file.set_wal_persistent(*persist != 0);
             sqlite3::SQLITE_OK
+        }
+        sqlite3::SQLITE_FCNTL_POWERSAFE_OVERWRITE => {
+            let psow = unsafe { arg.cast::<c_int>().as_mut() }.unwrap();
+            if *psow < 0 {
+                *psow = file.is_powersafe_overwrite() as c_int;
+                return sqlite3::SQLITE_OK;
+            }
+            file.set_powersafe_overwrite(*psow != 0).into_rc()
         }
         sqlite3::SQLITE_FCNTL_WAL_BLOCK => {
             file.hint_wal_lock();
@@ -1624,7 +1644,6 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         sqlite3::SQLITE_FCNTL_GET_LOCKPROXYFILE
         | sqlite3::SQLITE_FCNTL_SET_LOCKPROXYFILE
         | sqlite3::SQLITE_FCNTL_SIZE_LIMIT
-        | sqlite3::SQLITE_FCNTL_POWERSAFE_OVERWRITE
         | sqlite3::SQLITE_FCNTL_WIN32_GET_HANDLE
         | sqlite3::SQLITE_FCNTL_WIN32_SET_HANDLE
         | sqlite3::SQLITE_FCNTL_WIN32_AV_RETRY
