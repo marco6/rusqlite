@@ -93,7 +93,8 @@ impl OpenFlags {
 
     /// Returns the type of file being opened.
     pub fn file_type(&self) -> FileType {
-        match self.bits & 0x0FFF00 {
+        const SQLITE_FILE_TYPE_MASK: c_int = 0x0FFF00;
+        match self.bits & SQLITE_FILE_TYPE_MASK {
             sqlite3::SQLITE_OPEN_MAIN_DB => FileType::MainDb,
             sqlite3::SQLITE_OPEN_MAIN_JOURNAL => FileType::MainJournal,
             sqlite3::SQLITE_OPEN_TEMP_DB => FileType::TempDb,
@@ -158,36 +159,36 @@ pub trait Vfs: Sync {
     type File: VfsFile;
 
     /// Opens a file. Returns the file and the actual flags used.
-    /// 
+    ///
     /// See [xOpen](https://www.sqlite.org/c3ref/vfs.html).
     fn open(&self, name: Option<VfsPath<'_>>, flags: OpenFlags) -> Result<(Self::File, OpenFlags)>;
     /// Deletes a file, optionally syncing the directory afterward.
-    /// 
+    ///
     /// See [xDelete](https://www.sqlite.org/c3ref/vfs.html).
     fn delete(&self, name: VfsPath<'_>, sync_dir: bool) -> Result<()>;
     /// Checks if a file exists.
-    /// 
+    ///
     /// See [xAccess](https://www.sqlite.org/c3ref/vfs.html).
     fn exists(&self, name: VfsPath<'_>) -> Result<bool>;
     /// Checks if a file is readable.
-    /// 
+    ///
     /// See [xAccess](https://www.sqlite.org/c3ref/vfs.html).
     fn can_read(&self, name: VfsPath<'_>) -> Result<bool>;
     /// Checks if a file is writable.
-    /// 
+    ///
     /// See [xAccess](https://www.sqlite.org/c3ref/vfs.html).
     fn can_write(&self, name: VfsPath<'_>) -> Result<bool>;
     /// Writes the full pathname of a file to the output buffer.
-    /// 
+    ///
     /// See [xFullPathname](https://www.sqlite.org/c3ref/vfs.html).
     fn write_full_path(&self, name: VfsPath<'_>, out: &mut [u8]) -> Result<usize>;
     /// Returns the last error code.
-    /// 
+    ///
     /// See [xGetLastError](https://www.sqlite.org/c3ref/vfs.html).
     fn last_error(&self) -> i32;
 
     /// Fills a buffer with random bytes.
-    /// 
+    ///
     /// See [xRandomness](https://www.sqlite.org/c3ref/vfs.html).
     fn fill_random_bytes(&self, out: &mut [u8]) -> Result<()> {
         let mut rng = rand::rng();
@@ -196,14 +197,14 @@ pub trait Vfs: Sync {
     }
 
     /// Sleeps for the given duration.
-    /// 
+    ///
     /// See [xSleep](https://www.sqlite.org/c3ref/vfs.html).
     fn sleep(&self, duration: Duration) {
         thread::sleep(duration);
     }
 
     /// Returns the current system time.
-    /// 
+    ///
     /// See [xCurrentTimeInt64](https://www.sqlite.org/c3ref/vfs.html).
     fn now(&self) -> Result<SystemTime> {
         Ok(SystemTime::now())
@@ -428,14 +429,14 @@ pub trait VfsFile {
     }
 
     /// Gets powersafe overwrite property for the filesystem.
-    /// 
+    ///
     /// See [SQLITE_FCNTL_POWERSAFE_OVERWRITE](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlpowersafeoverwrite).
     fn is_powersafe_overwrite(&self) -> bool {
         false
     }
 
     /// Sets powersafe overwrite property for the filesystem.
-    /// 
+    ///
     /// See [SQLITE_FCNTL_POWERSAFE_OVERWRITE](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlpowersafeoverwrite).
     fn set_powersafe_overwrite(&mut self, powersafe: bool) -> Result<()> {
         let _ = powersafe;
@@ -555,9 +556,9 @@ pub enum WalLockMode {
 impl WalLockMode {
     /// Converts from raw SQLite flags.
     pub fn from_raw(raw: c_int) -> Self {
-        if raw & sqlite3::SQLITE_SHM_SHARED != 0 {
+        if (raw & sqlite3::SQLITE_SHM_SHARED) != 0 {
             WalLockMode::Shared
-        } else if raw & sqlite3::SQLITE_SHM_EXCLUSIVE != 0 {
+        } else if (raw & sqlite3::SQLITE_SHM_EXCLUSIVE) != 0 {
             WalLockMode::Exclusive
         } else {
             panic!("internal error: invalid wal lock mode");
@@ -1734,9 +1735,9 @@ where
     let lock_mode = WalLockMode::from_raw(flags);
     let wal_lock = WalLock::new(offset as usize, n as usize);
 
-    if flags & sqlite3::SQLITE_SHM_LOCK != 0 {
+    if (flags & sqlite3::SQLITE_SHM_LOCK) != 0 {
         file.lock_shm(wal_lock, lock_mode).into_rc()
-    } else if flags & sqlite3::SQLITE_SHM_UNLOCK != 0 {
+    } else if (flags & sqlite3::SQLITE_SHM_UNLOCK) != 0 {
         file.unlock_shm(wal_lock, lock_mode).into_rc()
     } else {
         panic!("internal error: invalid shm lock flags");
