@@ -347,7 +347,7 @@ pub trait VfsFile {
     ///
     /// See [SQLITE_FCNTL_SYNC](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlsync).
     fn pre_sync_single_db(&mut self) -> Result<()> {
-        Ok(())
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
     /// Pre-sync hook for multiple databases (with super-journal).
@@ -355,14 +355,14 @@ pub trait VfsFile {
     /// See [SQLITE_FCNTL_SYNC](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlsync).
     fn pre_sync_multiple_db(&mut self, super_journal: VfsPath<'_>) -> Result<()> {
         let _ = super_journal;
-        Ok(())
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
     /// Completes commit phase two.
     ///
     /// See [SQLITE_FCNTL_COMMIT_PHASETWO](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlcommitphasetwo).
     fn commit_phase_two(&mut self) -> Result<()> {
-        Ok(())
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
     /// Sets the parent connection.
@@ -410,7 +410,7 @@ pub trait VfsFile {
     /// See [SQLITE_FCNTL_LOCK_TIMEOUT](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntllocktimeout).
     fn set_lock_timeout(&mut self, timeout: Duration) -> Result<()> {
         let _ = timeout;
-        Ok(())
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
     /// Gets WAL persistence.
@@ -1177,13 +1177,12 @@ unsafe extern "C" fn x_open<T: Vfs, M: VfsMethodTableExt>(
         }
         None
     } else {
-        Some(OsStr::from_bytes(
+        Some(VfsPath::new(OsStr::from_bytes(
             unsafe { CStr::from_ptr(filename) }.to_bytes(),
-        ))
+        )))
     };
 
     let vfs_storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
-    let path = path.map(VfsPath);
     let flags = OpenFlags::new(flags);
     let (file, flags) = match vfs_storage.vfs.open(path, flags) {
         Ok(r) => r,
