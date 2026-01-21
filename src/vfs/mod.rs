@@ -222,11 +222,12 @@ pub trait Vfs: Sync {
 pub struct VfsPath<'a>(&'a OsStr);
 
 impl<'a> VfsPath<'a> {
+    /// Creates a new `VfsPath`.
     pub fn new(path: &'a OsStr) -> Self {
         Self(path)
     }
 
-    /// Returns the inner path as an `OsStr`.
+    /// Returns the inner path.
     pub fn inner(&self) -> &OsStr {
         self.0
     }
@@ -920,10 +921,10 @@ where
 }
 
 // Wal support implementation
-impl<F, T> VfsSupport<T, F, NoSupport>
+impl<T, F> VfsSupport<T, F, NoSupport>
 where
-    F: VfsWalFile,
     T: Vfs<File = F>,
+    F: VfsWalFile,
 {
     const fn methods() -> sqlite3_io_methods {
         let mut methods = VfsSupport::<T>::methods();
@@ -936,10 +937,10 @@ where
     }
 }
 
-impl<F, T> VfsMethodTableExt for VfsSupport<T, F, NoSupport>
+impl<T, F> VfsMethodTableExt for VfsSupport<T, F, NoSupport>
 where
-    F: VfsWalFile,
     T: Vfs<File = F>,
+    F: VfsWalFile,
 {
     const METHODS: sqlite3_io_methods = Self::methods();
 }
@@ -947,8 +948,8 @@ where
 // Fetch support implementation
 impl<T, F> VfsSupport<T, NoSupport, F>
 where
-    F: VfsFetchFile,
     T: Vfs<File = F>,
+    F: VfsFetchFile,
 {
     const fn methods() -> sqlite3_io_methods {
         let mut methods = VfsSupport::<T>::methods();
@@ -961,16 +962,16 @@ where
 
 impl<T, F> VfsMethodTableExt for VfsSupport<T, NoSupport, F>
 where
-    F: VfsFetchFile,
     T: Vfs<File = F>,
+    F: VfsFetchFile,
 {
     const METHODS: sqlite3_io_methods = Self::methods();
 }
 
-impl<F, T> VfsSupport<T, F, F>
+impl<T, F> VfsSupport<T, F, F>
 where
-    F: VfsFetchFile + VfsWalFile,
     T: Vfs<File = F>,
+    F: VfsFetchFile + VfsWalFile,
 {
     const fn methods() -> sqlite3_io_methods {
         let mut methods = VfsSupport::<T, F>::methods();
@@ -983,8 +984,8 @@ where
 
 impl<T, F> VfsMethodTableExt for VfsSupport<T, F, F>
 where
-    F: VfsFetchFile + VfsWalFile,
     T: Vfs<File = F>,
+    F: VfsFetchFile + VfsWalFile,
 {
     const METHODS: sqlite3_io_methods = Self::methods();
 }
