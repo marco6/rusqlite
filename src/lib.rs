@@ -146,10 +146,10 @@ pub mod types;
 #[cfg(feature = "unlock_notify")]
 mod unlock_notify;
 mod version;
-#[cfg(feature = "vtab")]
-pub mod vtab;
 #[cfg(feature = "vfs")]
 pub mod vfs;
+#[cfg(feature = "vtab")]
+pub mod vtab;
 
 pub(crate) mod util;
 

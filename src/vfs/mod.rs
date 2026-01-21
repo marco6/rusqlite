@@ -1,10 +1,10 @@
+use core::panic;
 use libsqlite3_sys as sqlite3;
 use libsqlite3_sys::{
     sqlite3_file, sqlite3_filename, sqlite3_int64, sqlite3_io_methods, sqlite3_vfs, Error,
     IntoResultCodeExt,
 };
 use rand::RngCore;
-use core::panic;
 use std::borrow::Cow;
 use std::error;
 use std::ffi::{c_char, c_int, CStr, CString, OsStr};
