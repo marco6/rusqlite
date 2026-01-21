@@ -163,26 +163,32 @@ pub trait Vfs: Sync {
     ///
     /// See [xOpen](https://www.sqlite.org/c3ref/vfs.html).
     fn open(&self, name: Option<VfsPath<'_>>, flags: OpenFlags) -> Result<(Self::File, OpenFlags)>;
+
     /// Deletes a file, optionally syncing the directory afterward.
     ///
     /// See [xDelete](https://www.sqlite.org/c3ref/vfs.html).
     fn delete(&self, name: VfsPath<'_>, sync_dir: bool) -> Result<()>;
+
     /// Checks if a file exists.
     ///
     /// See [xAccess](https://www.sqlite.org/c3ref/vfs.html).
     fn exists(&self, name: VfsPath<'_>) -> Result<bool>;
+
     /// Checks if a file is readable.
     ///
     /// See [xAccess](https://www.sqlite.org/c3ref/vfs.html).
     fn can_read(&self, name: VfsPath<'_>) -> Result<bool>;
+
     /// Checks if a file is writable.
     ///
     /// See [xAccess](https://www.sqlite.org/c3ref/vfs.html).
     fn can_write(&self, name: VfsPath<'_>) -> Result<bool>;
+
     /// Writes the full pathname of a file to the output buffer.
     ///
     /// See [xFullPathname](https://www.sqlite.org/c3ref/vfs.html).
     fn write_full_path(&self, name: VfsPath<'_>, out: &mut [u8]) -> Result<usize>;
+
     /// Returns the last error code.
     ///
     /// See [xGetLastError](https://www.sqlite.org/c3ref/vfs.html).
