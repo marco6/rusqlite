@@ -866,10 +866,8 @@ impl<V> Drop for VfsRegistrationGuard<V> {
 pub struct NoSupport;
 
 /// Stores info the I/O method categories supported by a [`Vfs`].
-pub struct VfsSupport<T, W = NoSupport, F = NoSupport> {
-    _base: PhantomData<T>,
-    _wal_support: PhantomData<W>,
-    _fetch_support: PhantomData<F>,
+pub struct VfsSupport<S> {
+    _support: PhantomData<S>,
 }
 
 /// Extension trait to provide a pre-computed [`Vfs`] method table.
@@ -880,7 +878,7 @@ trait VfsMethodTableExt {
 }
 
 // Base implementation without WAL and Fetch support.
-impl<T> VfsSupport<T, NoSupport, NoSupport>
+impl<T> VfsSupport<(T, NoSupport, NoSupport)>
 where
     T: Vfs,
 {
@@ -913,7 +911,7 @@ where
     }
 }
 
-impl<T> VfsMethodTableExt for VfsSupport<T, NoSupport, NoSupport>
+impl<T> VfsMethodTableExt for VfsSupport<(T, NoSupport, NoSupport)>
 where
     T: Vfs,
 {
@@ -921,13 +919,13 @@ where
 }
 
 // Wal support implementation
-impl<T, F> VfsSupport<T, F, NoSupport>
+impl<T, F> VfsSupport<(T, F, NoSupport)>
 where
     T: Vfs<File = F>,
     F: VfsWalFile,
 {
     const fn methods() -> sqlite3_io_methods {
-        let mut methods = VfsSupport::<T>::methods();
+        let mut methods = VfsSupport::<(T, NoSupport, NoSupport)>::methods();
         methods.iVersion = 2;
         methods.xShmMap = Some(x_shm_map::<T, F>);
         methods.xShmLock = Some(x_shm_lock::<T, F>);
@@ -937,7 +935,7 @@ where
     }
 }
 
-impl<T, F> VfsMethodTableExt for VfsSupport<T, F, NoSupport>
+impl<T, F> VfsMethodTableExt for VfsSupport<(T, F, NoSupport)>
 where
     T: Vfs<File = F>,
     F: VfsWalFile,
@@ -946,13 +944,13 @@ where
 }
 
 // Fetch support implementation
-impl<T, F> VfsSupport<T, NoSupport, F>
+impl<T, F> VfsSupport<(T, NoSupport, F)>
 where
     T: Vfs<File = F>,
     F: VfsFetchFile,
 {
     const fn methods() -> sqlite3_io_methods {
-        let mut methods = VfsSupport::<T>::methods();
+        let mut methods = VfsSupport::<(T, NoSupport, NoSupport)>::methods();
         methods.iVersion = 3;
         methods.xFetch = Some(x_fetch::<T, F>);
         methods.xUnfetch = Some(x_unfetch::<T, F>);
@@ -960,7 +958,7 @@ where
     }
 }
 
-impl<T, F> VfsMethodTableExt for VfsSupport<T, NoSupport, F>
+impl<T, F> VfsMethodTableExt for VfsSupport<(T, NoSupport, F)>
 where
     T: Vfs<File = F>,
     F: VfsFetchFile,
@@ -968,13 +966,13 @@ where
     const METHODS: sqlite3_io_methods = Self::methods();
 }
 
-impl<T, F> VfsSupport<T, F, F>
+impl<T, F> VfsSupport<(T, F, F)>
 where
     T: Vfs<File = F>,
     F: VfsFetchFile + VfsWalFile,
 {
     const fn methods() -> sqlite3_io_methods {
-        let mut methods = VfsSupport::<T, F>::methods();
+        let mut methods = VfsSupport::<(T, F, NoSupport)>::methods();
         methods.iVersion = 3;
         methods.xFetch = Some(x_fetch::<T, F>);
         methods.xUnfetch = Some(x_unfetch::<T, F>);
@@ -982,7 +980,7 @@ where
     }
 }
 
-impl<T, F> VfsMethodTableExt for VfsSupport<T, F, F>
+impl<T, F> VfsMethodTableExt for VfsSupport<(T, F, F)>
 where
     T: Vfs<File = F>,
     F: VfsFetchFile + VfsWalFile,
@@ -998,7 +996,7 @@ pub struct VfsRegistration<T, M> {
     method_table: PhantomData<M>,
 }
 
-impl<T: Vfs> VfsRegistration<T, VfsSupport<T>> {
+impl<T: Vfs> VfsRegistration<T, VfsSupport<(T, NoSupport, NoSupport)>> {
     /// Creates a new VFS registration builder.
     pub fn new(vfs: T) -> Self {
         Self {
@@ -1085,12 +1083,12 @@ impl<T, M> VfsRegistration<T, M> {
     }
 }
 
-impl<T: Vfs, Wal> VfsRegistration<T, VfsSupport<T, Wal, NoSupport>>
+impl<T: Vfs, Wal> VfsRegistration<T, VfsSupport<(T, Wal, NoSupport)>>
 where
     T::File: VfsFetchFile,
 {
     /// Enables fetch support (io_methods v3).
-    pub fn with_fetch(self) -> VfsRegistration<T, VfsSupport<T, Wal, T::File>> {
+    pub fn with_fetch(self) -> VfsRegistration<T, VfsSupport<(T, Wal, T::File)>> {
         let Self {
             vfs,
             max_pathlen,
@@ -1106,12 +1104,12 @@ where
     }
 }
 
-impl<T: Vfs, Fetch> VfsRegistration<T, VfsSupport<T, NoSupport, Fetch>>
+impl<T: Vfs, Fetch> VfsRegistration<T, VfsSupport<(T, NoSupport, Fetch)>>
 where
     T::File: VfsWalFile,
 {
     /// Enables WAL support (io_methods v2).
-    pub fn with_wal(self) -> VfsRegistration<T, VfsSupport<T, T::File, Fetch>> {
+    pub fn with_wal(self) -> VfsRegistration<T, VfsSupport<(T, T::File, Fetch)>> {
         let Self {
             vfs,
             max_pathlen,
