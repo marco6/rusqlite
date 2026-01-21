@@ -24,7 +24,7 @@ use std::{mem, slice};
 use crate::Connection;
 
 /// A specialised result type for [`Vfs`] operations.
-pub type Result<T> = core::result::Result<T, Error>;
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// Extension trait to write results to output parameters, returning an appropriate [`Result`].
 pub trait WriteOutputResultExt<T> {
