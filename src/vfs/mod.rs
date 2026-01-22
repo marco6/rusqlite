@@ -1828,7 +1828,7 @@ mod tests {
         }
 
         fn write_full_path(&self, path: VfsPath<'_>, mut out: &mut [u8]) -> Result<usize> {
-            Ok(out.write(path.inner().as_bytes()).unwrap())
+            Ok(out.write(path.as_os_str().as_bytes()).unwrap())
         }
 
         fn fill_random_bytes(&self, _out: &mut [u8]) -> Result<()> {
