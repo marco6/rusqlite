@@ -638,7 +638,7 @@ pub enum LockLevel {
 }
 
 impl LockLevel {
-    pub(crate) fn from_raw(level: c_int) -> Self {
+    pub fn from_raw(level: c_int) -> Self {
         match level {
             sqlite3::SQLITE_LOCK_NONE => LockLevel::None,
             sqlite3::SQLITE_LOCK_SHARED => LockLevel::Shared,
@@ -649,7 +649,7 @@ impl LockLevel {
         }
     }
 
-    pub(crate) fn to_raw(&self) -> c_int {
+    pub fn to_raw(&self) -> c_int {
         match self {
             LockLevel::None => sqlite3::SQLITE_LOCK_NONE,
             LockLevel::Shared => sqlite3::SQLITE_LOCK_SHARED,
