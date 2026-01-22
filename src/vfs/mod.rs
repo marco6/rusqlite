@@ -1,3 +1,4 @@
+use bitflags::Flags;
 use core::panic;
 use libsqlite3_sys as sqlite3;
 use libsqlite3_sys::{
@@ -21,7 +22,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use std::{mem, slice};
 
-use crate::Connection;
+use crate::{Connection, OpenFlags};
 
 /// A specialised result type for [`Vfs`] operations.
 pub type Result<T, E = Error> = core::result::Result<T, E>;
@@ -49,109 +50,6 @@ impl<T> WriteOutputResultExt<T> for Result<T> {
     }
 }
 
-/// Flags passed to [`Vfs::open`].
-pub struct OpenFlags {
-    bits: c_int,
-}
-
-impl OpenFlags {
-    /// Creates `OpenFlags` from raw flags.
-    pub fn new(bits: c_int) -> Self {
-        let open_flags = Self { bits };
-
-        // The following checks match SQLite exactly.
-
-        debug_assert!(
-            (!open_flags.read_only() || !open_flags.read_write())
-                && (open_flags.read_write() || open_flags.read_only())
-        );
-        debug_assert!(!open_flags.create() || open_flags.read_write());
-        debug_assert!(!open_flags.exclusive() || open_flags.create());
-        debug_assert!(!open_flags.delete_on_close() || open_flags.create());
-
-        debug_assert!(!open_flags.delete_on_close() || open_flags.file_type() != FileType::MainDb);
-        debug_assert!(
-            !open_flags.delete_on_close() || open_flags.file_type() != FileType::MainJournal
-        );
-        debug_assert!(
-            !open_flags.delete_on_close() || open_flags.file_type() != FileType::SuperJournal
-        );
-        debug_assert!(!open_flags.delete_on_close() || open_flags.file_type() != FileType::Wal);
-
-        debug_assert!(
-            open_flags.file_type() == FileType::MainDb
-                || open_flags.file_type() == FileType::TempDb
-                || open_flags.file_type() == FileType::MainJournal
-                || open_flags.file_type() == FileType::TempJournal
-                || open_flags.file_type() == FileType::Subjournal
-                || open_flags.file_type() == FileType::SuperJournal
-                || open_flags.file_type() == FileType::TransientDb
-                || open_flags.file_type() == FileType::Wal,
-        );
-
-        open_flags
-    }
-
-    /// Returns the type of file being opened.
-    pub fn file_type(&self) -> FileType {
-        const SQLITE_FILE_TYPE_MASK: c_int = 0x0FFF00;
-        match self.bits & SQLITE_FILE_TYPE_MASK {
-            sqlite3::SQLITE_OPEN_MAIN_DB => FileType::MainDb,
-            sqlite3::SQLITE_OPEN_MAIN_JOURNAL => FileType::MainJournal,
-            sqlite3::SQLITE_OPEN_TEMP_DB => FileType::TempDb,
-            sqlite3::SQLITE_OPEN_TEMP_JOURNAL => FileType::TempJournal,
-            sqlite3::SQLITE_OPEN_TRANSIENT_DB => FileType::TransientDb,
-            sqlite3::SQLITE_OPEN_SUBJOURNAL => FileType::Subjournal,
-            sqlite3::SQLITE_OPEN_SUPER_JOURNAL => FileType::SuperJournal,
-            sqlite3::SQLITE_OPEN_WAL => FileType::Wal,
-            _ => panic!("internal error: invalid file type"),
-        }
-    }
-
-    /// Returns whether the file should be created if it doesn't exist.
-    pub fn create(&self) -> bool {
-        (self.bits & sqlite3::SQLITE_OPEN_CREATE) != 0
-    }
-
-    /// Returns whether the file is opened in read-only mode.
-    pub fn read_only(&self) -> bool {
-        (self.bits & sqlite3::SQLITE_OPEN_READONLY) != 0
-    }
-
-    /// Returns whether the file is opened in read-write mode.
-    pub fn read_write(&self) -> bool {
-        (self.bits & sqlite3::SQLITE_OPEN_READWRITE) != 0
-    }
-
-    /// Returns whether the file should be deleted when closed.
-    pub fn delete_on_close(&self) -> bool {
-        (self.bits & sqlite3::SQLITE_OPEN_DELETEONCLOSE) != 0
-    }
-
-    /// Returns whether the file should be opened exclusively.
-    pub fn exclusive(&self) -> bool {
-        (self.bits & sqlite3::SQLITE_OPEN_EXCLUSIVE) != 0
-    }
-
-    /// Returns whether the autoproxy locking style should be used.
-    pub fn autoproxy(&self) -> bool {
-        (self.bits & sqlite3::SQLITE_OPEN_AUTOPROXY) != 0
-    }
-}
-
-/// The type of file being opened.
-#[derive(Debug, PartialEq, Eq)]
-pub enum FileType {
-    MainDb,
-    MainJournal,
-    TempDb,
-    TempJournal,
-    TransientDb,
-    Subjournal,
-    SuperJournal,
-    Wal,
-}
-
 /// Represents a sqlite virtual file system.
 ///
 /// This trait abstracts [sqlite3_vfs](https://www.sqlite.org/c3ref/vfs.html).
@@ -162,8 +60,7 @@ pub trait Vfs: Sync {
     /// Opens a file. Returns the file and the actual flags used.
     ///
     /// See [`xOpen`](https://www.sqlite.org/c3ref/vfs.html).
-    fn open(&self, name: Option<VfsPath<'_>>, flags: OpenFlags) -> Result<(Self::File, OpenFlags)>;
-
+    fn open(&self, file: FileType<'_>, flags: VfsOpenFlags) -> Result<OpenFile<Self::File>>;
     /// Deletes a file, optionally syncing the directory afterward.
     ///
     /// See [`xDelete`](https://www.sqlite.org/c3ref/vfs.html).
@@ -218,7 +115,53 @@ pub trait Vfs: Sync {
     }
 }
 
+/// The type of file being opened.
+#[derive(Debug)]
+pub enum FileType<'a> {
+    MainDb(VfsPath<'a>),
+    MainJournal(VfsPath<'a>),
+    TempDb,
+    TempJournal,
+    TransientDb,
+    Subjournal(VfsPath<'a>),
+    SuperJournal(VfsPath<'a>),
+    Wal(VfsPath<'a>),
+}
+
+impl<'a> FileType<'a> {
+    pub fn path(&self) -> Option<&VfsPath<'a>> {
+        match self {
+            FileType::MainDb(path)
+            | FileType::MainJournal(path)
+            | FileType::Subjournal(path)
+            | FileType::SuperJournal(path)
+            | FileType::Wal(path) => Some(path),
+            FileType::TempDb | FileType::TempJournal | FileType::TransientDb => None,
+        }
+    }
+}
+
+bitflags::bitflags! {
+    pub struct VfsOpenFlags: c_int {
+        const SQLITE_OPEN_READ_ONLY = sqlite3::SQLITE_OPEN_READONLY;
+        const SQLITE_OPEN_READ_WRITE = sqlite3::SQLITE_OPEN_READWRITE;
+        const SQLITE_OPEN_DELETE_ON_CLOSE = sqlite3::SQLITE_OPEN_DELETEONCLOSE;
+        const SQLITE_OPEN_EXCLUSIVE = sqlite3::SQLITE_OPEN_EXCLUSIVE;
+        const SQLITE_OPEN_AUTOPROXY = sqlite3::SQLITE_OPEN_AUTOPROXY;
+        const SQLITE_OPEN_CREATE = sqlite3::SQLITE_OPEN_CREATE;
+        const SQLITE_OPEN_URI = sqlite3::SQLITE_OPEN_URI;
+        const SQLITE_OPEN_MEMORY = sqlite3::SQLITE_OPEN_MEMORY;
+        const SQLITE_OPEN_NO_MUTEX = sqlite3::SQLITE_OPEN_NOMUTEX;
+        const SQLITE_OPEN_FULL_MUTEX = sqlite3::SQLITE_OPEN_FULLMUTEX;
+        const SQLITE_OPEN_SHARED_CACHE = 0x0002_0000;
+        const SQLITE_OPEN_PRIVATE_CACHE = 0x0004_0000;
+        const SQLITE_OPEN_NOFOLLOW = 0x0100_0000;
+        const SQLITE_OPEN_EXRESCODE = 0x0200_0000;
+    }
+}
+
 /// A file path passed to VFS operations.
+#[derive(Debug)]
 pub struct VfsPath<'a>(&'a OsStr);
 
 impl<'a> VfsPath<'a> {
@@ -230,6 +173,25 @@ impl<'a> VfsPath<'a> {
     /// Returns the inner path.
     pub fn inner(&self) -> &OsStr {
         self.0
+    }
+}
+
+pub struct OpenFile<F> {
+    file: F,
+    readonly: bool,
+}
+
+impl<T> OpenFile<T> {
+    pub fn new(file: T) -> Self {
+        OpenFile {
+            file,
+            readonly: false,
+        }
+    }
+
+    pub fn readonly(mut self) -> Self {
+        self.readonly = true;
+        self
     }
 }
 
@@ -1206,12 +1168,43 @@ unsafe extern "C" fn x_open<T: Vfs, M: VfsMethodTableExt>(
     };
 
     let vfs_storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
-    let flags = OpenFlags::new(flags);
-    let (file, flags) = match vfs_storage.vfs.open(path, flags) {
+
+    const SQLITE_FILE_TYPE_MASK: c_int = 0x0FFF00;
+    let file_type = match flags & SQLITE_FILE_TYPE_MASK {
+        sqlite3::SQLITE_OPEN_MAIN_DB => {
+            FileType::MainDb(path.expect("internal error: NULL database path"))
+        }
+        sqlite3::SQLITE_OPEN_MAIN_JOURNAL => {
+            FileType::MainJournal(path.expect("internal error: NULL database path"))
+        }
+        sqlite3::SQLITE_OPEN_TEMP_DB => FileType::TempDb,
+        sqlite3::SQLITE_OPEN_TEMP_JOURNAL => FileType::TempJournal,
+        sqlite3::SQLITE_OPEN_TRANSIENT_DB => FileType::TransientDb,
+        sqlite3::SQLITE_OPEN_SUBJOURNAL => {
+            FileType::Subjournal(path.expect("internal error: NULL database path"))
+        }
+        sqlite3::SQLITE_OPEN_SUPER_JOURNAL => {
+            FileType::SuperJournal(path.expect("internal error: NULL database path"))
+        }
+        sqlite3::SQLITE_OPEN_WAL => {
+            FileType::Wal(path.expect("internal error: NULL database path"))
+        }
+        _ => panic!("internal error: invalid file type"),
+    };
+    let vfs_flags = VfsOpenFlags::from_bits_truncate(flags);
+    let open_file = match vfs_storage.vfs.open(file_type, vfs_flags) {
         Ok(r) => r,
         Err(e) => return e.extended_code,
     };
-
+    if !out_flags.is_null() {
+        unsafe {
+            out_flags.write(if open_file.readonly {
+                flags | sqlite3::SQLITE_OPEN_READONLY
+            } else {
+                flags
+            });
+        }
+    }
     let methods: &'static sqlite3_io_methods = &M::METHODS;
     let storage = VfsFileStorage {
         base: sqlite3_file {
@@ -1219,11 +1212,10 @@ unsafe extern "C" fn x_open<T: Vfs, M: VfsMethodTableExt>(
         },
         state: FileStorageState::Open {
             vfs: vfs_storage,
-            file,
+            file: open_file.file,
         },
     };
     unsafe {
-        out_flags.write(flags.bits);
         out.cast::<VfsFileStorage<T>>().write(storage);
     }
     sqlite3::SQLITE_OK
@@ -1828,10 +1820,10 @@ mod tests {
 
         fn open(
             &self,
-            _path: Option<VfsPath<'_>>,
-            _flags: OpenFlags,
-        ) -> Result<(Self::File, OpenFlags)> {
-            Ok((DummyFile, _flags))
+            _path: FileType<'_>,
+            _flags: VfsOpenFlags,
+        ) -> Result<OpenFile<Self::File>> {
+            Ok(OpenFile::new(DummyFile))
         }
 
         fn delete(&self, _path: VfsPath<'_>, _sync: bool) -> Result<()> {
