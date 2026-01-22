@@ -162,16 +162,21 @@ bitflags::bitflags! {
 
 /// A file path passed to VFS operations.
 #[derive(Debug)]
-pub struct VfsPath<'a>(&'a OsStr);
+pub struct VfsPath<'a>(&'a CStr);
 
 impl<'a> VfsPath<'a> {
     /// Creates a new `VfsPath`.
-    pub fn new(path: &'a OsStr) -> Self {
+    pub fn new(path: &'a CStr) -> Self {
         Self(path)
     }
 
-    /// Returns the inner path.
-    pub fn inner(&self) -> &OsStr {
+    /// Returns the inner path as a OsStr.
+    pub fn as_os_str(&self) -> &OsStr {
+        OsStr::from_bytes(self.0.to_bytes())
+    }
+
+    /// Returns the inner path as a CStr.
+    pub fn as_c_str(&self) -> &CStr {
         self.0
     }
 }
@@ -478,7 +483,7 @@ impl Display for PragmaError {
 
 impl error::Error for PragmaError {}
 
-/// Represents file I/O behaviours required to use a write-ahead log with shared-memory support
+/// Represents file I/O behaviors required to use a write-ahead log with shared-memory support
 /// with a [`Vfs`].
 ///
 /// This trait corresponds to [`sqlite3_io_methods` v2](https://www.sqlite.org/c3ref/io_methods.html).
@@ -591,7 +596,7 @@ impl WalLock {
     }
 }
 
-/// Represents file I/O behaviours for in-memory page access with a [`Vfs`].
+/// Represents file I/O behaviors for in-memory page access with a [`Vfs`].
 ///
 /// This trait is optional and corresponds to ([`sqlite3_io_methods` v3](https://www.sqlite.org/c3ref/io_methods.html)).
 pub trait VfsFetchFile: VfsFile {
@@ -1162,9 +1167,7 @@ unsafe extern "C" fn x_open<T: Vfs, M: VfsMethodTableExt>(
         }
         None
     } else {
-        Some(VfsPath::new(OsStr::from_bytes(
-            unsafe { CStr::from_ptr(filename) }.to_bytes(),
-        )))
+        Some(VfsPath::new(unsafe { CStr::from_ptr(filename) }))
     };
 
     let vfs_storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
@@ -1227,7 +1230,7 @@ unsafe extern "C" fn x_delete<T: Vfs>(
     sync: c_int,
 ) -> c_int {
     let storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
-    let name = OsStr::from_bytes(unsafe { CStr::from_ptr(filename) }.to_bytes());
+    let name = unsafe { CStr::from_ptr(filename) };
     storage.vfs.delete(VfsPath(name), sync != 0).into_rc()
 }
 
@@ -1238,7 +1241,7 @@ unsafe extern "C" fn x_access<T: Vfs>(
     outcome: *mut c_int,
 ) -> c_int {
     let storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
-    let name = OsStr::from_bytes(unsafe { CStr::from_ptr(filename) }.to_bytes());
+    let name = unsafe { CStr::from_ptr(filename) };
     let out = unsafe { outcome.as_mut().unwrap() };
 
     let result = match flags {
@@ -1258,7 +1261,7 @@ unsafe extern "C" fn x_full_pathname<T: Vfs>(
     out: *mut c_char,
 ) -> c_int {
     let storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
-    let name = OsStr::from_bytes(unsafe { CStr::from_ptr(name) }.to_bytes());
+    let name = unsafe { CStr::from_ptr(name) };
     let out_len = std::mem::size_of::<c_char>() * n_out as usize;
     let out_slice = unsafe { slice::from_raw_parts_mut(out as *mut u8, out_len) };
 
@@ -1574,10 +1577,8 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             if super_journal_raw.is_null() {
                 return file.pre_sync_single_db().into_rc();
             }
-            file.pre_sync_multiple_db(VfsPath(OsStr::from_bytes(
-                unsafe { CStr::from_ptr(super_journal_raw) }.to_bytes(),
-            )))
-            .into_rc()
+            file.pre_sync_multiple_db(VfsPath(unsafe { CStr::from_ptr(super_journal_raw) }))
+                .into_rc()
         }
         sqlite3::SQLITE_FCNTL_COMMIT_PHASETWO => file.commit_phase_two().into_rc(),
         sqlite3::SQLITE_FCNTL_PDB => {
@@ -1818,11 +1819,7 @@ mod tests {
     impl Vfs for DummyVfs {
         type File = DummyFile;
 
-        fn open(
-            &self,
-            _path: FileType<'_>,
-            _flags: VfsOpenFlags,
-        ) -> Result<OpenFile<Self::File>> {
+        fn open(&self, _path: FileType<'_>, _flags: VfsOpenFlags) -> Result<OpenFile<Self::File>> {
             Ok(OpenFile::new(DummyFile))
         }
 
