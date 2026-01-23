@@ -1194,7 +1194,7 @@ unsafe extern "C" fn x_open<T: Vfs, M: VfsMethodTableExt>(
         }
         _ => panic!("internal error: invalid file type"),
     };
-    let vfs_flags = VfsOpenFlags::from_bits_truncate(flags);
+    let vfs_flags = VfsOpenFlags::from_bits_retain(flags);
     let open_file = match vfs_storage.vfs.open(file_type, vfs_flags) {
         Ok(r) => r,
         Err(e) => return e.extended_code,
