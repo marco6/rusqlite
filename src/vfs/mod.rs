@@ -377,7 +377,7 @@ pub trait VfsFile {
     /// Sets the busy handler.
     ///
     /// See [`SQLITE_FCNTL_BUSYHANDLER`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlbusyhandler).
-    fn set_busy_handler(&mut self, handler: impl Fn() -> bool + 'static) {
+    fn set_busy_handler(&mut self, handler: BusyHandler) {
         let _ = handler;
     }
 
@@ -454,6 +454,7 @@ pub struct PragmaError {
 }
 
 impl PragmaError {
+    /// Constructs a pragma error with an explicit message.
     pub fn new(code: Error, message: impl Into<Cow<'static, str>>) -> Self {
         PragmaError {
             code,
@@ -482,6 +483,23 @@ impl Display for PragmaError {
 }
 
 impl error::Error for PragmaError {}
+
+/// Represents the connection busy handler callback.
+/// 
+/// See 
+pub struct BusyHandler {
+    handler: extern "C" fn(*mut c_void) -> c_int,
+    arg: *mut c_void,
+}
+
+impl BusyHandler {
+    /// Calls the busy handler. Returns true to retry, false to give up.
+    pub fn call(&self) -> bool {
+        let rc = (self.handler)(self.arg);
+        rc != 0
+    }
+}
+
 
 /// Represents file I/O behaviors required to use a write-ahead log with shared-memory support
 /// with a [`Vfs`].
@@ -1607,14 +1625,13 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         }
         sqlite3::SQLITE_FCNTL_BUSYHANDLER => {
             let args = unsafe { slice::from_raw_parts(arg.cast::<*mut c_void>(), 2) };
-            let busy_handler: extern "C" fn(*mut c_void) -> c_int =
+            let handler: extern "C" fn(*mut c_void) -> c_int =
                 unsafe { mem::transmute(args[0]) };
-            let busy_handler_arg = args[1];
-            let wrapped_handler = move || {
-                let rc = busy_handler(busy_handler_arg);
-                rc != 0
-            };
-            file.set_busy_handler(wrapped_handler);
+            let arg = args[1];
+            file.set_busy_handler(BusyHandler {  
+                handler,
+                arg
+            });
             sqlite3::SQLITE_OK
         }
         sqlite3::SQLITE_FCNTL_NULL_IO => {
