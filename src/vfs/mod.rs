@@ -1389,8 +1389,13 @@ unsafe extern "C" fn x_read<T: Vfs>(
     let buf = unsafe { slice::from_raw_parts_mut(data as *mut u8, amount as usize) };
     file.read_at(buf, offset as u64)
         .and_then(|size| {
-            buf[size..].fill(0);
-            Ok(())
+            if size < buf.len() {
+                // Zero-fill the rest of the buffer
+                buf[size..].fill(0);
+                Err(Error::new(sqlite3::SQLITE_IOERR_SHORT_READ))
+            } else {
+                Ok(())
+            }
         })
         .into_rc()
 }
