@@ -297,10 +297,10 @@ pub trait VfsFile {
         Err(PragmaError::from(Error::new(sqlite3::SQLITE_NOTFOUND)))
     }
 
-    /// Sets the max mmap size.
+    /// Sets the max mmap size and returns the previous value.
     ///
     /// See [`SQLITE_FCNTL_MMAP_SIZE`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlmmapsize).
-    fn set_mmap_size(&mut self, size: u64) -> Result<()> {
+    fn set_mmap_size(&mut self, size: u64) -> Result<u64> {
         let _ = size;
         Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
@@ -308,8 +308,8 @@ pub trait VfsFile {
     /// Gets the max mmap size.
     ///
     /// See [`SQLITE_FCNTL_MMAP_SIZE`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlmmapsize).
-    fn mmap_size(&self) -> u64 {
-        0
+    fn mmap_size(&self) -> Result<u64> {
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
     /// Reports whether the file has moved.
@@ -1000,7 +1000,11 @@ impl<T: Vfs, M: VfsMethodTableExt> VfsRegistration<T, M> {
         } = self;
 
         let storage = Arc::new_cyclic(move |storage| {
-            let name = CString::new(name).unwrap();
+            let name = match CString::new(name) {
+                Ok(name) => name,
+                Err(_) => unreachable!(), // `&str` cannot contain '\0'.
+            };
+
             let base = sqlite3_vfs {
                 iVersion: 2,
                 szOsFile: std::mem::size_of::<VfsFileStorage<T>>() as c_int,
@@ -1576,12 +1580,15 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         sqlite3::SQLITE_FCNTL_MMAP_SIZE => {
             let size = unsafe { arg.cast::<sqlite3_int64>().as_mut() }.unwrap();
             let new_size = *size;
-            let old_size = file.mmap_size();
-            *size = old_size as i64;
-            if new_size < 0 {
-                return sqlite3::SQLITE_OK;
-            }
-            file.set_mmap_size(new_size as u64).into_rc()
+            let result = if new_size < 0 {
+                file.mmap_size()
+            } else {
+                file.set_mmap_size(new_size as u64)
+            };
+            result
+                .map(|size| size as sqlite3_int64)
+                .write_to_output(size)
+                .into_rc()
         }
         sqlite3::SQLITE_FCNTL_HAS_MOVED => {
             unsafe { arg.cast::<c_int>().write(file.has_moved() as c_int) };
