@@ -367,13 +367,6 @@ pub trait VfsFile {
     /// See [`SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlrollbackatomicwrite).
     fn rollback_atomic(&mut self) {}
 
-    /// Gets the lock timeout.
-    ///
-    /// See [`SQLITE_FCNTL_LOCK_TIMEOUT`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntllocktimeout).
-    fn lock_timeout(&self) -> Duration {
-        Duration::from_millis(0)
-    }
-
     /// Sets the busy handler.
     ///
     /// See [`SQLITE_FCNTL_BUSYHANDLER`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlbusyhandler).
@@ -381,10 +374,10 @@ pub trait VfsFile {
         let _ = handler;
     }
 
-    /// Sets the lock timeout.
+    /// Sets the lock timeout and returns the previous value.
     ///
     /// See [`SQLITE_FCNTL_LOCK_TIMEOUT`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntllocktimeout).
-    fn set_lock_timeout(&mut self, timeout: Duration) -> Result<()> {
+    fn set_lock_timeout(&mut self, timeout: Duration) -> Result<Duration> {
         let _ = timeout;
         Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
@@ -485,8 +478,8 @@ impl Display for PragmaError {
 impl error::Error for PragmaError {}
 
 /// Represents the connection busy handler callback.
-/// 
-/// See 
+///
+/// See
 pub struct BusyHandler {
     handler: extern "C" fn(*mut c_void) -> c_int,
     arg: *mut c_void,
@@ -499,7 +492,6 @@ impl BusyHandler {
         rc != 0
     }
 }
-
 
 /// Represents file I/O behaviors required to use a write-ahead log with shared-memory support
 /// with a [`Vfs`].
@@ -1619,19 +1611,16 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         sqlite3::SQLITE_FCNTL_LOCK_TIMEOUT => {
             let timeout = unsafe { arg.cast::<i32>().as_mut() }.unwrap();
             let new_timeout = Duration::from_millis(*timeout as u64);
-            let old_timeout = file.lock_timeout();
-            *timeout = old_timeout.as_millis() as i32;
-            file.set_lock_timeout(new_timeout).into_rc()
+            file.set_lock_timeout(new_timeout)
+                .map(|old| old.as_millis() as i32)
+                .write_to_output(timeout)
+                .into_rc()
         }
         sqlite3::SQLITE_FCNTL_BUSYHANDLER => {
             let args = unsafe { slice::from_raw_parts(arg.cast::<*mut c_void>(), 2) };
-            let handler: extern "C" fn(*mut c_void) -> c_int =
-                unsafe { mem::transmute(args[0]) };
+            let handler: extern "C" fn(*mut c_void) -> c_int = unsafe { mem::transmute(args[0]) };
             let arg = args[1];
-            file.set_busy_handler(BusyHandler {  
-                handler,
-                arg
-            });
+            file.set_busy_handler(BusyHandler { handler, arg });
             sqlite3::SQLITE_OK
         }
         sqlite3::SQLITE_FCNTL_NULL_IO => {
