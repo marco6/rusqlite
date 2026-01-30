@@ -459,6 +459,28 @@ pub trait VfsFile {
     fn on_checkpoint_done(&mut self) {}
 }
 
+/// Options for syncing a file.
+pub struct SyncOptions {
+    /// True for Mac OS X style fullsync, false for Unix style fsync.
+    pub full: bool,
+    /// True to sync only the data of the file and not its inode (fdatasync).
+    pub data_only: bool,
+}
+
+impl SyncOptions {
+    /// Converts to raw SQLite flags.
+    pub fn to_raw(&self) -> c_int {
+        let mut flags = 0;
+        if self.full {
+            flags |= sqlite3::SQLITE_SYNC_FULL;
+        }
+        if self.data_only {
+            flags |= sqlite3::SQLITE_SYNC_DATAONLY;
+        }
+        flags
+    }
+}
+
 /// Represents pragma operation results.
 pub type PragmaResult = std::result::Result<Option<Cow<'static, str>>, PragmaError>;
 
@@ -655,27 +677,6 @@ pub trait VfsFetchFile: VfsFile {
     ///
     /// See [`xUnfetch`](https://www.sqlite.org/c3ref/io_methods.html#xUnfetch).
     fn unfetch_all(&mut self) -> Result<()>;
-}
-
-/// Options for syncing a file.
-pub struct SyncOptions {
-    /// True for Mac OS X style fullsync, false for Unix style fsync.
-    pub full: bool,
-    /// True to sync only the data of the file and not its inode (fdatasync).
-    pub data_only: bool,
-}
-
-impl SyncOptions {
-    pub fn to_raw(&self) -> c_int {
-        let mut flags = 0;
-        if self.full {
-            flags |= sqlite3::SQLITE_SYNC_FULL;
-        }
-        if self.data_only {
-            flags |= sqlite3::SQLITE_SYNC_DATAONLY;
-        }
-        flags
-    }
 }
 
 /// File locking levels. See [File Locking](https://www.sqlite.org/lockingv3.html).
