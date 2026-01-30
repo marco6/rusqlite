@@ -114,7 +114,7 @@ pub trait Vfs: Sync {
 }
 
 /// The type of file being opened.
-/// 
+///
 /// See [xOpen](https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen)
 #[derive(Debug)]
 pub enum FileType<'a> {
@@ -238,6 +238,14 @@ impl<T> OpenFile<T> {
         self
     }
 }
+
+pub trait UnixVfsFileExt {}
+
+#[cfg(windows)]
+pub trait WindowsVfsFileExt {}
+
+#[cfg(windows)]
+pub trait OsVfsFileExt {}
 
 /// Represents the most basic file I/O bahaviours required by a [`Vfs`].
 ///
@@ -471,6 +479,31 @@ pub trait VfsFile {
     ///
     /// See [`SQLITE_FCNTL_CKPT_DONE`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlckptdone).
     fn on_checkpoint_done(&mut self) {}
+
+    /// Gets the lock proxy file path. This is only used on MacOS by the unix VFS.
+    ///
+    /// See [`SQLITE_FCNTL_LOCK_PROXYFILE`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html).
+    #[cfg(unix)]
+    fn lock_proxy_file_path(&self) -> Result<Option<&'static CStr>> {
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
+    }
+
+    /// Gets the lock proxy file path. This is only used on MacOS by the unix VFS.
+    ///
+    /// See [`SQLITE_FCNTL_LOCK_PROXYFILE`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html).
+    #[cfg(unix)]
+    fn set_lock_proxy_file_path(&mut self, path: Option<&'static CStr>) -> Result<()> {
+        let _ = path;
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
+    }
+
+    /// Sets the size limit, checking for validity, and returns the value set. This is only used by the memory VFS.
+    ///
+    /// See [`SQLITE_FCNTL_SIZE_LIMIT`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlsizelimit).
+    fn set_size_limit(&mut self, size: Option<u64>) -> Result<u64> {
+        let _ = size;
+        Err(Error::new(sqlite3::SQLITE_NOTFOUND))
+    }
 }
 
 /// Options for syncing a file.
@@ -589,7 +622,7 @@ pub trait VfsWalFile: VfsFile {
 }
 
 /// Lock mode for WAL shared-memory operations.
-/// 
+///
 /// See [Flags for xShmLock](https://sqlite.org/c3ref/c_shm_exclusive.html).
 #[derive(Copy, Clone, Debug)]
 pub enum WalLockMode {
@@ -631,7 +664,7 @@ impl WalLockMode {
 }
 
 /// A set representing WAL locks.
-/// 
+///
 /// See [WAL Locks](https://sqlite.org/walformat.html#locks).
 pub struct WalLock {
     mask: u16,
@@ -1788,16 +1821,68 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         }
 
         // Not available as they are specific VFS detail
-        sqlite3::SQLITE_FCNTL_GET_LOCKPROXYFILE
-        | sqlite3::SQLITE_FCNTL_SET_LOCKPROXYFILE
-        | sqlite3::SQLITE_FCNTL_SIZE_LIMIT
-        | sqlite3::SQLITE_FCNTL_WIN32_GET_HANDLE
+        sqlite3::SQLITE_FCNTL_GET_LOCKPROXYFILE => {
+            let out = unsafe {
+                arg.cast::<*const c_char>().as_mut().expect(
+                    "internal error: arg for SQLITE_FCNTL_GET_LOCKPROXYFILE must point to a *mut c_char",
+                )
+            };
+            file.lock_proxy_file_path()
+                .map(|path| path.map_or(ptr::null(), |p| p.as_ptr()))
+                .write_to_output(out)
+                .into_rc()
+        }
+        sqlite3::SQLITE_FCNTL_SET_LOCKPROXYFILE => {
+            let path_ptr = arg.cast::<c_char>();
+            let path = if path_ptr.is_null() {
+                None
+            } else {
+                Some(unsafe { CStr::from_ptr(path_ptr) })
+            };
+            file.set_lock_proxy_file_path(path).into_rc()
+        }
+
+        sqlite3::SQLITE_FCNTL_SIZE_LIMIT => {
+            let limit = unsafe { arg.cast::<sqlite3_int64>().as_mut() }.expect(
+                "internal error: arg for SQLITE_FCNTL_SIZE_LIMIT must point to an sqlite3_int64",
+            );
+            let new_limit = if *limit < 0 {
+                None
+            } else {
+                Some(*limit as u64)
+            };
+            file.set_size_limit(new_limit)
+                .map(|size| size as sqlite3_int64)
+                .write_to_output(limit)
+                .into_rc()
+        }
+        // TODO: I don't have a Windows system to test/implement this.
+        sqlite3::SQLITE_FCNTL_WIN32_GET_HANDLE
         | sqlite3::SQLITE_FCNTL_WIN32_SET_HANDLE
-        | sqlite3::SQLITE_FCNTL_WIN32_AV_RETRY
-        | sqlite3::SQLITE_FCNTL_ZIPVFS
-        | sqlite3::SQLITE_FCNTL_RBU
-        | sqlite3::SQLITE_FCNTL_CKSM_FILE
-        | sqlite3::SQLITE_FCNTL_EXTERNAL_READER => sqlite3::SQLITE_NOTFOUND,
+        | sqlite3::SQLITE_FCNTL_WIN32_AV_RETRY => todo!(),
+
+        // FIXME: this can't be implemented right now as it requires understanding 
+        // what zipvfs is doing internally. But that is proprietary software and there
+        // is not public documentation about it. The only usage I could find is in
+        // rbu vfs where the argument passed is a *mut c_void that is expected to be
+        // filled with zipvfs-specific data (Or a pointer to the file? Or to the vfs?) 
+        // And is used as a check. The only way to implement this properly is to pass
+        // something like `&mut ()` or a `*mut c_void` from the caller side, but I
+        // think that is not useful for now.
+        sqlite3::SQLITE_FCNTL_ZIPVFS => sqlite3::SQLITE_NOTFOUND,
+
+        // FIXME: this requires us to provide RBU support, which we don't have right now.
+        // Mapping here the RBU datastructures is non-trivial and not useful without 
+        // proper safe wrappers for it.
+        sqlite3::SQLITE_FCNTL_RBU => sqlite3::SQLITE_NOTFOUND,
+
+        // This has been removed in newer SQLite versions (0e77c3fa4d4c3445600869b6f32ecddc31d82c3d)
+        // as it was actively harmful (it was preventing recovery in WAL mode).
+        sqlite3::SQLITE_FCNTL_CKSM_FILE => sqlite3::SQLITE_NOTFOUND,
+        
+        // FIXME: This is experimental. I think it's best to wait until there is a
+        // more concrete use case for it and the interface is stabilized.
+        sqlite3::SQLITE_FCNTL_EXTERNAL_READER => sqlite3::SQLITE_NOTFOUND,
 
         // Should be implemented by SQLite core
         sqlite3::SQLITE_FCNTL_DATA_VERSION
