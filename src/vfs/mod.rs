@@ -1861,25 +1861,25 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         | sqlite3::SQLITE_FCNTL_WIN32_SET_HANDLE
         | sqlite3::SQLITE_FCNTL_WIN32_AV_RETRY => todo!(),
 
-        // FIXME: this can't be implemented right now as it requires understanding 
+        // FIXME: this can't be implemented right now as it requires understanding
         // what zipvfs is doing internally. But that is proprietary software and there
         // is not public documentation about it. The only usage I could find is in
         // rbu vfs where the argument passed is a *mut c_void that is expected to be
-        // filled with zipvfs-specific data (Or a pointer to the file? Or to the vfs?) 
+        // filled with zipvfs-specific data (Or a pointer to the file? Or to the vfs?)
         // And is used as a check. The only way to implement this properly is to pass
         // something like `&mut ()` or a `*mut c_void` from the caller side, but I
         // think that is not useful for now.
         sqlite3::SQLITE_FCNTL_ZIPVFS => sqlite3::SQLITE_NOTFOUND,
 
         // FIXME: this requires us to provide RBU support, which we don't have right now.
-        // Mapping here the RBU datastructures is non-trivial and not useful without 
+        // Mapping here the RBU datastructures is non-trivial and not useful without
         // proper safe wrappers for it.
         sqlite3::SQLITE_FCNTL_RBU => sqlite3::SQLITE_NOTFOUND,
 
         // This has been removed in newer SQLite versions (0e77c3fa4d4c3445600869b6f32ecddc31d82c3d)
         // as it was actively harmful (it was preventing recovery in WAL mode).
         sqlite3::SQLITE_FCNTL_CKSM_FILE => sqlite3::SQLITE_NOTFOUND,
-        
+
         // FIXME: This is experimental. I think it's best to wait until there is a
         // more concrete use case for it and the interface is stabilized.
         sqlite3::SQLITE_FCNTL_EXTERNAL_READER => sqlite3::SQLITE_NOTFOUND,
