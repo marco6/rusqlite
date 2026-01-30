@@ -142,21 +142,48 @@ impl<'a> FileType<'a> {
 }
 
 bitflags::bitflags! {
+    /// Flags used by VFS-backed opens, extending [`crate::OpenFlags`].
     pub struct VfsOpenFlags: c_int {
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_READ_ONLY].
         const SQLITE_OPEN_READ_ONLY = sqlite3::SQLITE_OPEN_READONLY;
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_READ_WRITE].
         const SQLITE_OPEN_READ_WRITE = sqlite3::SQLITE_OPEN_READWRITE;
+        /// Deletes the file when it is closed. See <https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen>.
         const SQLITE_OPEN_DELETE_ON_CLOSE = sqlite3::SQLITE_OPEN_DELETEONCLOSE;
+        /// Opens the file in exclusive mode. See <https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen>.
         const SQLITE_OPEN_EXCLUSIVE = sqlite3::SQLITE_OPEN_EXCLUSIVE;
+        /// Enables auto-proxy handling for VFS layering. See <https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen>.
         const SQLITE_OPEN_AUTOPROXY = sqlite3::SQLITE_OPEN_AUTOPROXY;
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_CREATE].
         const SQLITE_OPEN_CREATE = sqlite3::SQLITE_OPEN_CREATE;
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_URI].
         const SQLITE_OPEN_URI = sqlite3::SQLITE_OPEN_URI;
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_MEMORY].
         const SQLITE_OPEN_MEMORY = sqlite3::SQLITE_OPEN_MEMORY;
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_NO_MUTEX].
         const SQLITE_OPEN_NO_MUTEX = sqlite3::SQLITE_OPEN_NOMUTEX;
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_FULL_MUTEX].
         const SQLITE_OPEN_FULL_MUTEX = sqlite3::SQLITE_OPEN_FULLMUTEX;
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_SHARED_CACHE].
         const SQLITE_OPEN_SHARED_CACHE = 0x0002_0000;
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_PRIVATE_CACHE].
         const SQLITE_OPEN_PRIVATE_CACHE = 0x0004_0000;
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_NOFOLLOW].
         const SQLITE_OPEN_NOFOLLOW = 0x0100_0000;
+        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_EXRESCODE].
         const SQLITE_OPEN_EXRESCODE = 0x0200_0000;
+    }
+}
+
+impl From<OpenFlags> for VfsOpenFlags {
+    fn from(flags: OpenFlags) -> Self {
+        VfsOpenFlags::from_bits_retain(flags.bits())
+    }
+}
+
+impl From<VfsOpenFlags> for OpenFlags {
+    fn from(flags: VfsOpenFlags) -> Self {
+        OpenFlags::from_bits_retain(flags.bits())
     }
 }
 
@@ -540,7 +567,17 @@ pub enum WalLockMode {
 
 impl WalLockMode {
     /// Converts from raw SQLite flags.
-    pub fn from_raw(raw: c_int) -> Self {
+    pub fn try_from_raw(raw: c_int) -> Result<Self> {
+        if (raw & sqlite3::SQLITE_SHM_SHARED) != 0 {
+            Ok(WalLockMode::Shared)
+        } else if (raw & sqlite3::SQLITE_SHM_EXCLUSIVE) != 0 {
+            Ok(WalLockMode::Exclusive)
+        } else {
+            Err(Error::new(sqlite3::SQLITE_MISUSE))
+        }
+    }
+
+    pub fn from_raw_unchecked(raw: c_int) -> Self {
         if (raw & sqlite3::SQLITE_SHM_SHARED) != 0 {
             WalLockMode::Shared
         } else if (raw & sqlite3::SQLITE_SHM_EXCLUSIVE) != 0 {
@@ -1749,7 +1786,7 @@ where
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
     let file = storage.file();
-    let lock_mode = WalLockMode::from_raw(flags);
+    let lock_mode = WalLockMode::from_raw_unchecked(flags);
     let wal_lock = WalLock::new(offset as usize, n as usize);
 
     if (flags & sqlite3::SQLITE_SHM_LOCK) != 0 {
