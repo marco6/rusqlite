@@ -114,19 +114,30 @@ pub trait Vfs: Sync {
 }
 
 /// The type of file being opened.
+/// 
+/// See [xOpen](https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen)
 #[derive(Debug)]
 pub enum FileType<'a> {
+    /// Mirrors SQLITE_OPEN_MAIN_DB.
     MainDb(VfsPath<'a>),
+    /// Mirrors SQLITE_OPEN_MAIN_JOURNAL.
     MainJournal(VfsPath<'a>),
+    /// Mirrors SQLITE_OPEN_TEMP_DB.
     TempDb,
+    /// Mirrors SQLITE_OPEN_TEMP_JOURNAL.
     TempJournal,
+    /// Mirrors SQLITE_OPEN_TRANSIENT_DB.
     TransientDb,
+    /// Mirrors SQLITE_OPEN_SUBJOURNAL.
     Subjournal(VfsPath<'a>),
+    /// Mirrors SQLITE_OPEN_SUPER_JOURNAL.
     SuperJournal(VfsPath<'a>),
+    /// Mirrors SQLITE_OPEN_WAL.
     Wal(VfsPath<'a>),
 }
 
 impl<'a> FileType<'a> {
+    /// Returns the path associated with this file type, if available.
     pub fn path(&self) -> Option<&VfsPath<'a>> {
         match self {
             FileType::MainDb(path)
@@ -206,12 +217,14 @@ impl<'a> VfsPath<'a> {
     }
 }
 
+/// Represents a VFS opened file along with its additional flags.
 pub struct OpenFile<F> {
     file: F,
     readonly: bool,
 }
 
 impl<T> OpenFile<T> {
+    /// Creates a new `OpenFile`.
     pub fn new(file: T) -> Self {
         OpenFile {
             file,
@@ -219,6 +232,7 @@ impl<T> OpenFile<T> {
         }
     }
 
+    /// Marks the file as readonly. See [SQLITE_OPEN_READONLY](https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen).
     pub fn readonly(mut self) -> Self {
         self.readonly = true;
         self
@@ -575,9 +589,13 @@ pub trait VfsWalFile: VfsFile {
 }
 
 /// Lock mode for WAL shared-memory operations.
+/// 
+/// See [Flags for xShmLock](https://sqlite.org/c3ref/c_shm_exclusive.html).
 #[derive(Copy, Clone, Debug)]
 pub enum WalLockMode {
+    /// Mirrors [`SQLITE_SHM_SHARED`](https://sqlite.org/c3ref/c_shm_exclusive.html).
     Shared,
+    /// Mirrors [`SQLITE_SHM_EXCLUSIVE`](https://sqlite.org/c3ref/c_shm_exclusive.html).
     Exclusive,
 }
 
@@ -593,7 +611,7 @@ impl WalLockMode {
         }
     }
 
-    pub fn from_raw_unchecked(raw: c_int) -> Self {
+    fn from_raw_unchecked(raw: c_int) -> Self {
         if (raw & sqlite3::SQLITE_SHM_SHARED) != 0 {
             WalLockMode::Shared
         } else if (raw & sqlite3::SQLITE_SHM_EXCLUSIVE) != 0 {
@@ -613,14 +631,20 @@ impl WalLockMode {
 }
 
 /// A set representing WAL locks.
+/// 
+/// See [WAL Locks](https://sqlite.org/walformat.html#locks).
 pub struct WalLock {
     mask: u16,
 }
 
 impl WalLock {
+    /// Slot index reserved for the WAL write lock.
     pub const WAL_WRITE_LOCK: usize = 0;
+    /// Slot index reserved for the WAL checkpoint lock.
     pub const WAL_CKPT_LOCK: usize = 1;
+    /// Slot index reserved for the WAL recovery lock.
     pub const WAL_RECOVER_LOCK: usize = 2;
+    /// Slot index of the first WAL read lock.
     pub const WAL_READ_LOCK_0: usize = 3;
 
     /// Creates a set from an offset and count.
@@ -720,7 +744,7 @@ impl LockLevel {
 }
 
 /// I/O characteristics reported by [`VfsFile::io_capabilities`].
-/// 
+///
 /// See [Device Characteristics](https://sqlite.org/c3ref/c_iocap_atomic.html).
 #[derive(Clone, Debug, Default)]
 pub struct IoCapabilities {
@@ -743,7 +767,6 @@ pub struct IoCapabilities {
 }
 
 impl IoCapabilities {
-    
     /// Builds the structured capabilities from raw SQLite flag bits.
     pub fn from_raw(raw: c_int) -> Self {
         let write_cap = if raw == 0 {
