@@ -1,4 +1,3 @@
-use bitflags::Flags;
 use core::panic;
 use libsqlite3_sys as sqlite3;
 use libsqlite3_sys::{
@@ -528,12 +527,8 @@ pub trait VfsWalFile: VfsFile {
     /// Maps a shared-memory region.
     ///
     /// See [`xShmMap`](https://www.sqlite.org/c3ref/io_methods.html#xShmMap).
-    fn map_shm(
-        &mut self,
-        region_number: NonZero<u32>,
-        region_size: usize,
-        extend: bool,
-    ) -> Result<&mut [u8]>;
+    fn map_shm(&mut self, region_index: u32, region_size: usize, extend: bool)
+        -> Result<&mut [u8]>;
 
     /// Acquires a shared-memory lock.
     ///
@@ -650,12 +645,17 @@ pub trait VfsFetchFile: VfsFile {
     /// Fetches a page region into memory.
     ///
     /// See [`xFetch`](https://www.sqlite.org/c3ref/io_methods.html#xFetch).
-    fn fetch(&mut self, offset: i64, amount: NonZero<usize>) -> Result<&mut [u8]>;
+    fn fetch(&mut self, offset: i64, amount: NonZero<usize>) -> Result<Option<&mut [u8]>>;
 
     /// Releases a previously fetched region.
     ///
     /// See [`xUnfetch`](https://www.sqlite.org/c3ref/io_methods.html#xUnfetch).
     fn unfetch(&mut self, offset: i64, ptr: NonNull<u8>) -> Result<()>;
+
+    /// Releases all previously fetched regions.
+    ///
+    /// See [`xUnfetch`](https://www.sqlite.org/c3ref/io_methods.html#xUnfetch).
+    fn unfetch_all(&mut self) -> Result<()>;
 }
 
 /// Options for syncing a file.
@@ -1293,7 +1293,11 @@ unsafe extern "C" fn x_access<T: Vfs>(
 ) -> c_int {
     let storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
     let name = unsafe { CStr::from_ptr(filename) };
-    let out = unsafe { outcome.as_mut().unwrap() };
+    let out = unsafe {
+        outcome
+            .as_mut()
+            .expect("internal error: invalid output pointer for xAccess")
+    };
 
     let result = match flags {
         sqlite3::SQLITE_ACCESS_EXISTS => storage.vfs.exists(VfsPath(name)),
@@ -1400,13 +1404,17 @@ unsafe extern "C" fn x_get_current_time<T: Vfs>(vfs: *mut sqlite3_vfs, out_ptr: 
     const UNIX_EPOCH: i64 = 24405875i64 * 8640000i64;
 
     let storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
-    let out = unsafe { out_ptr.as_mut().unwrap() };
+    let out = unsafe {
+        out_ptr
+            .as_mut()
+            .expect("internal error: invalid output pointer for xCurrentTimeInt64")
+    };
     storage
         .vfs
         .now()
         .map(|time| {
             time.duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
+                .expect("internal error: now is before unix epoch")
                 .as_millis() as i64
                 + UNIX_EPOCH
         })
@@ -1485,7 +1493,11 @@ unsafe extern "C" fn x_file_size<T: Vfs>(
 ) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
     let file = storage.file();
-    let out = unsafe { out_ptr.as_mut().unwrap() };
+    let out = unsafe {
+        out_ptr
+            .as_mut()
+            .expect("internal error: invalid output pointer for xFileSize")
+    };
     file.len()
         .map(|size| size as i64)
         .write_to_output(out)
@@ -1512,7 +1524,11 @@ unsafe extern "C" fn x_check_reserved_lock<T: Vfs>(
 ) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
     let file = storage.file();
-    let out = unsafe { out_ptr.as_mut().unwrap() };
+    let out = unsafe {
+        out_ptr
+            .as_mut()
+            .expect("internal error: invalid output pointer for xCheckReservedLock")
+    };
     file.is_write_locked().write_to_output(out).into_rc()
 }
 
@@ -1562,7 +1578,8 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             //   arg[1]: input *char (pragma name)
             //   arg[2]: input *char or NULL (pragma argument)
             let args = unsafe { slice::from_raw_parts_mut(arg.cast::<*mut c_char>(), 3) };
-            let name = str::from_utf8(unsafe { CStr::from_ptr(args[1]) }.to_bytes()).unwrap();
+            let name = str::from_utf8(unsafe { CStr::from_ptr(args[1]) }.to_bytes())
+                .expect("internal error: pragma name is not valid utf-8");
             let arg_raw = args[2];
             let arg = if !arg_raw.is_null() {
                 Some(
@@ -1615,7 +1632,9 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             }
         }
         sqlite3::SQLITE_FCNTL_MMAP_SIZE => {
-            let size = unsafe { arg.cast::<sqlite3_int64>().as_mut() }.unwrap();
+            let size = unsafe { arg.cast::<sqlite3_int64>().as_mut() }.expect(
+                "internal error: arg for SQLITE_FCNTL_MMAP_SIZE must point to an sqlite3_int64",
+            );
             let new_size = *size;
             let result = if new_size < 0 {
                 file.mmap_size()
@@ -1642,7 +1661,8 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         sqlite3::SQLITE_FCNTL_COMMIT_PHASETWO => file.commit_phase_two().into_rc(),
         sqlite3::SQLITE_FCNTL_PDB => {
             let pdb = unsafe { arg.cast::<*mut sqlite3::sqlite3>().read() };
-            let connection = unsafe { Connection::from_handle(pdb) }.unwrap();
+            let connection = unsafe { Connection::from_handle(pdb) }
+                .expect("internal error: invalid sqlite3 handle");
             file.set_parent_connection(connection);
             sqlite3::SQLITE_OK
         }
@@ -1653,7 +1673,8 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             sqlite3::SQLITE_OK
         }
         sqlite3::SQLITE_FCNTL_LOCK_TIMEOUT => {
-            let timeout = unsafe { arg.cast::<i32>().as_mut() }.unwrap();
+            let timeout = unsafe { arg.cast::<i32>().as_mut() }
+                .expect("internal error: arg for SQLITE_FCNTL_LOCK_TIMEOUT must point to an i32");
             let new_timeout = Duration::from_millis(*timeout as u64);
             file.set_lock_timeout(new_timeout)
                 .map(|old| old.as_millis() as i32)
@@ -1672,7 +1693,8 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             sqlite3::SQLITE_OK
         }
         sqlite3::SQLITE_FCNTL_PERSIST_WAL => {
-            let persist = unsafe { arg.cast::<i32>().as_mut() }.unwrap();
+            let persist = unsafe { arg.cast::<i32>().as_mut() }
+                .expect("internal error: arg for SQLITE_FCNTL_PERSIST_WAL must point to an i32");
             if *persist < 0 {
                 *persist = file.is_wal_persistent() as i32;
                 return sqlite3::SQLITE_OK;
@@ -1681,7 +1703,9 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             sqlite3::SQLITE_OK
         }
         sqlite3::SQLITE_FCNTL_POWERSAFE_OVERWRITE => {
-            let psow = unsafe { arg.cast::<c_int>().as_mut() }.unwrap();
+            let psow = unsafe { arg.cast::<c_int>().as_mut() }.expect(
+                "internal error: arg for SQLITE_FCNTL_POWERSAFE_OVERWRITE must point to an c_int",
+            );
             if *psow < 0 {
                 *psow = file.is_powersafe_overwrite() as c_int;
                 return sqlite3::SQLITE_OK;
@@ -1693,7 +1717,9 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             sqlite3::SQLITE_OK
         }
         sqlite3::SQLITE_FCNTL_BLOCK_ON_CONNECT => {
-            let block = unsafe { arg.cast::<i32>().as_mut() }.unwrap();
+            let block = unsafe { arg.cast::<i32>().as_mut() }.expect(
+                "internal error: arg for SQLITE_FCNTL_BLOCK_ON_CONNECT must point to an i32",
+            );
             file.hint_block_on_connect(*block != 0);
             sqlite3::SQLITE_OK
         }
@@ -1763,15 +1789,19 @@ where
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
     let file = storage.file();
-    let out = unsafe { out_ptr.cast::<*mut u8>().as_mut().unwrap() };
-    file.map_shm(
-        NonZero::new(region as u32).unwrap(),
-        size as usize,
-        extend != 0,
-    )
-    .map(|s| s.as_mut_ptr())
-    .write_to_output(out)
-    .into_rc()
+    let out = unsafe {
+        out_ptr
+            .cast::<*mut u8>()
+            .as_mut()
+            .expect("internal error: invalid output pointer for xShmMap")
+    };
+    if region < 0 {
+        return sqlite3::SQLITE_MISUSE;
+    }
+    file.map_shm(region as u32, size as usize, extend != 0)
+        .map(|s| s.as_mut_ptr())
+        .write_to_output(out)
+        .into_rc()
 }
 
 unsafe extern "C" fn x_shm_lock<T, F>(
@@ -1830,9 +1860,17 @@ where
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
     let file = storage.file();
-    let out = unsafe { out_ptr.cast::<*mut u8>().as_mut().unwrap() };
+    let out = unsafe {
+        out_ptr
+            .cast::<*mut u8>()
+            .as_mut()
+            .expect("internal error: invalid output pointer for xFetch")
+    };
+    if amount <= 0 {
+        panic!("internal error: amount passed to xFetch must be above 0");
+    }
     file.fetch(offset, NonZero::new(amount as usize).unwrap())
-        .map(|s| s.as_mut_ptr())
+        .map(|s| s.map_or(ptr::null_mut(), |slice| slice.as_mut_ptr()))
         .write_to_output(out)
         .into_rc()
 }
@@ -1848,8 +1886,11 @@ where
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
     let file = storage.file();
-    file.unfetch(offset, NonNull::new(ptr as *mut u8).unwrap())
-        .into_rc()
+    if let Some(ptr) = NonNull::new(ptr as *mut u8) {
+        file.unfetch(offset, ptr).into_rc()
+    } else {
+        file.unfetch_all().into_rc()
+    }
 }
 
 #[cfg(test)]
@@ -1969,7 +2010,7 @@ mod tests {
     impl VfsWalFile for DummyFile {
         fn map_shm(
             &mut self,
-            _region_number: NonZero<u32>,
+            _region_index: u32,
             _region_size: usize,
             _extend: bool,
         ) -> Result<&mut [u8]> {
@@ -1990,11 +2031,15 @@ mod tests {
     }
 
     impl VfsFetchFile for DummyFile {
+        fn fetch(&mut self, _offset: i64, _amount: NonZero<usize>) -> Result<&mut [u8]> {
+            Err(Error::new(sqlite3::SQLITE_ERROR))
+        }
+
         fn unfetch(&mut self, _offset: i64, _ptr: NonNull<u8>) -> Result<()> {
             Err(Error::new(sqlite3::SQLITE_ERROR))
         }
 
-        fn fetch(&mut self, _offset: i64, _amount: NonZero<usize>) -> Result<&mut [u8]> {
+        fn unfetch_all(&mut self) -> Result<()> {
             Err(Error::new(sqlite3::SQLITE_ERROR))
         }
     }
