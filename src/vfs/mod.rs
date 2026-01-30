@@ -1821,6 +1821,7 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         }
 
         // Not available as they are specific VFS detail
+        #[cfg(unix)]
         sqlite3::SQLITE_FCNTL_GET_LOCKPROXYFILE => {
             let out = unsafe {
                 arg.cast::<*const c_char>().as_mut().expect(
@@ -1832,6 +1833,10 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
                 .write_to_output(out)
                 .into_rc()
         }
+        #[cfg(not(unix))]
+        sqlite3::SQLITE_FCNTL_GET_LOCKPROXYFILE => sqlite3::SQLITE_NOTFOUND,
+
+        #[cfg(unix)]
         sqlite3::SQLITE_FCNTL_SET_LOCKPROXYFILE => {
             let path_ptr = arg.cast::<c_char>();
             let path = if path_ptr.is_null() {
@@ -1841,6 +1846,8 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
             };
             file.set_lock_proxy_file_path(path).into_rc()
         }
+        #[cfg(not(unix))]
+        sqlite3::SQLITE_FCNTL_SET_LOCKPROXYFILE => sqlite3::SQLITE_NOTFOUND,
 
         sqlite3::SQLITE_FCNTL_SIZE_LIMIT => {
             let limit = unsafe { arg.cast::<sqlite3_int64>().as_mut() }.expect(
