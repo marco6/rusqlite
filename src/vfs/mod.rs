@@ -681,14 +681,20 @@ impl SyncOptions {
 /// File locking levels. See [File Locking](https://www.sqlite.org/lockingv3.html).
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LockLevel {
+    /// Mirrors SQLITE_LOCK_NONE.
     None,
+    /// Mirrors SQLITE_LOCK_SHARED.
     Shared,
+    /// Mirrors SQLITE_LOCK_RESERVED.
     Reserved,
+    /// Mirrors SQLITE_LOCK_PENDING.
     Pending,
+    /// Mirrors SQLITE_LOCK_EXCLUSIVE.
     Exclusive,
 }
 
 impl LockLevel {
+    /// Converts SQLite lock constants into [`LockLevel`].
     pub fn from_raw(level: c_int) -> Self {
         match level {
             sqlite3::SQLITE_LOCK_NONE => LockLevel::None,
@@ -700,6 +706,7 @@ impl LockLevel {
         }
     }
 
+    /// Converts [`LockLevel`] back into SQLite lock constants.
     pub fn to_raw(&self) -> c_int {
         match self {
             LockLevel::None => sqlite3::SQLITE_LOCK_NONE,
@@ -712,19 +719,31 @@ impl LockLevel {
 }
 
 /// I/O characteristics reported by [`VfsFile::io_capabilities`].
+/// 
+/// See [Device Characteristics](https://sqlite.org/c3ref/c_iocap_atomic.html).
 #[derive(Clone, Debug, Default)]
 pub struct IoCapabilities {
-    pub write_cap: AtomicWrite,
+    /// Mirrors SQLITE_IOCAP_ATOMIC*; captures the atomic write guarantee.
+    pub atomic_write: AtomicWrite,
+    /// Mirrors SQLITE_IOCAP_SAFE_APPEND; data grows before the file length.
     pub safe_append: bool,
+    /// Mirrors SQLITE_IOCAP_SEQUENTIAL; writes reach storage in call order.
     pub sequential: bool,
+    /// Mirrors SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN; prevents unlink while open.
     pub undeletable_when_open: bool,
+    /// Mirrors SQLITE_IOCAP_POWERSAFE_OVERWRITE; crashes leave neighbors intact.
     pub powersafe_overwrite: bool,
+    /// Mirrors SQLITE_IOCAP_IMMUTABLE; indicates read-only backing media.
     pub immutable: bool,
+    /// Mirrors SQLITE_IOCAP_BATCH_ATOMIC; honors begin/commit atomic writes.
     pub batch_atomic: bool,
+    /// Mirrors SQLITE_IOCAP_SUBPAGE_READ; permits unaligned reads beyond header.
     pub subpage_read: bool,
 }
 
 impl IoCapabilities {
+    
+    /// Builds the structured capabilities from raw SQLite flag bits.
     pub fn from_raw(raw: c_int) -> Self {
         let write_cap = if raw == 0 {
             AtomicWrite::Never
@@ -744,7 +763,7 @@ impl IoCapabilities {
         };
 
         IoCapabilities {
-            write_cap,
+            atomic_write: write_cap,
             safe_append: (raw & sqlite3::SQLITE_IOCAP_SAFE_APPEND) != 0,
             sequential: (raw & sqlite3::SQLITE_IOCAP_SEQUENTIAL) != 0,
             undeletable_when_open: (raw & sqlite3::SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN) != 0,
@@ -755,11 +774,12 @@ impl IoCapabilities {
         }
     }
 
+    /// Converts the structured capabilities to raw SQLite flag bits.
     pub fn to_raw(&self) -> c_int {
         let mut flags = 0;
 
         let IoCapabilities {
-            write_cap,
+            atomic_write: write_cap,
             safe_append,
             sequential,
             undeletable_when_open,
@@ -838,18 +858,29 @@ impl IoCapabilities {
 /// Atomic write capabilities.
 #[derive(Clone, Debug, Default)]
 pub enum AtomicWrite {
+    /// No SQLITE_IOCAP_ATOMIC* bits are set.
     #[default]
     Never,
+    /// Mirrors size-specific SQLITE_IOCAP_ATOMICnnn bitfields.
     Block {
+        /// SQLITE_IOCAP_ATOMIC512
         size_512: bool,
+        /// SQLITE_IOCAP_ATOMIC1K
         size_1k: bool,
+        /// SQLITE_IOCAP_ATOMIC2K
         size_2k: bool,
+        /// SQLITE_IOCAP_ATOMIC4K
         size_4k: bool,
+        /// SQLITE_IOCAP_ATOMIC8K
         size_8k: bool,
+        /// SQLITE_IOCAP_ATOMIC16K
         size_16k: bool,
+        /// SQLITE_IOCAP_ATOMIC32K
         size_32k: bool,
+        /// SQLITE_IOCAP_ATOMIC64K
         size_64k: bool,
     },
+    /// Mirrors SQLITE_IOCAP_ATOMIC.
     Always,
 }
 
@@ -885,7 +916,8 @@ pub struct VfsSupport<S> {
 
 /// Extension trait to provide a pre-computed [`Vfs`] method table.
 /// This is only necessary due to Rust's current lack of const generics over types.
-trait VfsMethodTableExt {
+#[doc(hidden)]
+pub trait VfsMethodTableExt {
     /// The available methods derived from a [`VfsSupport`].
     const METHODS: sqlite3_io_methods;
 }
