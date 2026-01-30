@@ -1,4 +1,3 @@
-use core::panic;
 use libsqlite3_sys as sqlite3;
 use libsqlite3_sys::{
     sqlite3_file, sqlite3_filename, sqlite3_int64, sqlite3_io_methods, sqlite3_vfs, Error,
@@ -2031,7 +2030,7 @@ mod tests {
     }
 
     impl VfsFetchFile for DummyFile {
-        fn fetch(&mut self, _offset: i64, _amount: NonZero<usize>) -> Result<&mut [u8]> {
+        fn fetch(&mut self, _offset: i64, _amount: NonZero<usize>) -> Result<Option<&mut [u8]>> {
             Err(Error::new(sqlite3::SQLITE_ERROR))
         }
 
