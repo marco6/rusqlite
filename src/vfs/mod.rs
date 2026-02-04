@@ -1,3 +1,6 @@
+/// An read-only in-memory VFS implementation for SQLite databases.
+pub mod memvfs;
+
 use libsqlite3_sys as sqlite3;
 use libsqlite3_sys::{
     sqlite3_file, sqlite3_filename, sqlite3_int64, sqlite3_io_methods, sqlite3_vfs, Error,
@@ -238,14 +241,6 @@ impl<T> OpenFile<T> {
         self
     }
 }
-
-pub trait UnixVfsFileExt {}
-
-#[cfg(windows)]
-pub trait WindowsVfsFileExt {}
-
-#[cfg(windows)]
-pub trait OsVfsFileExt {}
 
 /// Represents the most basic file I/O bahaviours required by a [`Vfs`].
 ///
