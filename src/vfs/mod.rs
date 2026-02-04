@@ -25,7 +25,7 @@ use crate::{Connection, OpenFlags};
 /// A specialised result type for [`Vfs`] operations.
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
-/// Extension trait to write results to output parameters, returning an appropriate [`Result`].
+/// Extension trait to write results to output parameters, consuming the result and returning an appropriate [`Result`].
 pub trait WriteOutputResultExt<T> {
     /// Converts `self` into the `sqlite`-expected `out` param + return code form.
     ///
