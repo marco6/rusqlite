@@ -938,6 +938,7 @@ pub enum AtomicWrite {
 }
 
 /// RAII guard that unregisters a VFS on drop.
+#[must_use]
 pub struct VfsRegistrationGuard<V>(Arc<VfsStorage<V>>);
 
 impl<V> Deref for VfsRegistrationGuard<V> {
