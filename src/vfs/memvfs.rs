@@ -9,16 +9,17 @@ use std::{
 
 use libsqlite3_sys::Error;
 
-use crate::{
-    vfs::{
-        FileType, IoCapabilities, LockLevel, OpenFile, Result, SyncOptions, Vfs, VfsFile,
-        VfsOpenFlags, VfsPath,
-    },
-    Connection,
+use crate::vfs::{
+    FileType, IoCapabilities, LockLevel, OpenFile, Result, SyncOptions, Vfs, VfsFile, VfsOpenFlags,
+    VfsPath,
 };
+
+#[cfg(feature = "serialize")]
+use crate::Connection;
 
 /// An in-memory VFS implementation. This VFS allows you to read files entirely in memory.
 /// It is useful for testing or for applications that require fast access to temporary data.
+#[derive(Default)]
 pub struct MemVfs {
     files: RwLock<HashMap<OsString, Arc<[u8]>>>,
 }
@@ -171,8 +172,7 @@ impl VfsFile for MemFile {
 
 #[cfg(test)]
 mod tests {
-    use crate::Connection;
-
+    #[allow(unused)]
     use super::*;
 
     #[test]

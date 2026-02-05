@@ -44,8 +44,7 @@ pub trait WriteOutputResultExt<T> {
     /// Converts `self` into the `sqlite`-expected `out` param + return code form.
     ///
     /// If `self` is:
-    /// - `Ok(value)`, then `value` is written to `*output` and [`Result::Ok`]
-    ///    is returned.
+    /// - `Ok(value)`, then `value` is written to `*output` and [`Result::Ok`] is returned.
     /// - `Err(err)`, then `*output` is unchanged and `err` is returned.
     fn write_to_output(self, output: &mut impl From<T>) -> Result<()>;
 }
@@ -256,6 +255,7 @@ impl<T> OpenFile<T> {
 /// Represents the most basic file I/O bahaviours required by a [`Vfs`].
 ///
 /// This trait is optional and corresponds to [`sqlite3_io_methods` v1](https://www.sqlite.org/c3ref/io_methods.html).
+#[allow(clippy::len_without_is_empty)]
 pub trait VfsFile {
     /// Reads from the file at an offset.
     ///
@@ -1452,9 +1452,9 @@ unsafe extern "C" fn x_dlsym(
     sym: *const c_char,
 ) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)> {
     Some(unsafe {
-        mem::transmute::<_, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)>(dlsym(
-            p, sym,
-        ))
+        mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)>(
+            dlsym(p, sym),
+        )
     })
 }
 
@@ -1975,7 +1975,7 @@ where
     } else if (flags & sqlite3::SQLITE_SHM_UNLOCK) != 0 {
         file.unlock_shm(wal_lock, lock_mode).into_rc()
     } else {
-        return sqlite3::SQLITE_MISUSE;
+        sqlite3::SQLITE_MISUSE
     }
 }
 
