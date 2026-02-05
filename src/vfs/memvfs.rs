@@ -202,7 +202,7 @@ mod tests {
                 ",
             )?
             .query_map(params![], |row| row.get(0))?
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<_>>()?;
         assert_eq!(
             values,
             ["hello", "world"]
@@ -267,7 +267,7 @@ mod tests {
                 ",
             )?
             .query_map(params![], |row| row.get(0))?
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<_>>()?;
         assert_eq!(
             values,
             ["foo", "bar", "baz"]
