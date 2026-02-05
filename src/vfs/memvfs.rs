@@ -18,7 +18,7 @@ use crate::{
 /// An in-memory VFS implementation. This VFS allows you to read files entirely in memory.
 /// It is useful for testing or for applications that require fast access to temporary data.
 pub struct MemVfs {
-    files: RwLock<HashMap<OsString, Arc<Vec<u8>>>>,
+    files: RwLock<HashMap<OsString, Arc<[u8]>>>,
 }
 
 impl MemVfs {
@@ -32,7 +32,7 @@ impl MemVfs {
     /// Add a file with the given name and data to the VFS. If a file with the same name already exists, it will be overwritten.
     pub fn add_file(&self, name: impl Into<OsString>, data: impl Into<Vec<u8>>) {
         let mut files = self.files.write().unwrap();
-        files.insert(name.into(), Arc::new(data.into()));
+        files.insert(name.into(), Arc::from(data.into()));
     }
 
     /// Create a new file in the VFS by serializing an in-memory database.
@@ -61,16 +61,16 @@ impl Vfs for MemVfs {
     type File = MemFile;
 
     fn open(&self, file: FileType<'_>, _flags: VfsOpenFlags) -> Result<OpenFile<Self::File>> {
-        match file {
-            FileType::MainDb(name) => {
-                let files = self.files.read().unwrap();
-                if let Some(data) = files.get(name.as_os_str()) {
-                    Ok(OpenFile::new(MemFile { data: data.clone() }).readonly())
-                } else {
-                    Err(Error::new(libsqlite3_sys::SQLITE_CANTOPEN))
-                }
-            }
+        let name = match file {
+            FileType::MainDb(name) => name,
             _ => return Err(Error::new(libsqlite3_sys::SQLITE_CANTOPEN)),
+        };
+
+        let files = self.files.read().unwrap();
+        if let Some(data) = files.get(name.as_os_str()) {
+            Ok(OpenFile::new(MemFile { data: data.clone() }).readonly())
+        } else {
+            Err(Error::new(libsqlite3_sys::SQLITE_CANTOPEN))
         }
     }
 
@@ -104,18 +104,17 @@ impl Vfs for MemVfs {
 
 /// A read-only file in the in-memory VFS.
 pub struct MemFile {
-    data: Arc<Vec<u8>>,
+    data: Arc<[u8]>,
 }
 
 impl VfsFile for MemFile {
     fn read_at(&mut self, buf: &mut [u8], offset: u64) -> Result<usize> {
-        let data = self.data.as_slice();
-        if offset >= data.len() as u64 {
+        if offset >= self.data.len() as u64 {
             return Ok(0);
         }
-        let end = std::cmp::min(offset as usize + buf.len(), data.len());
+        let end = std::cmp::min(offset as usize + buf.len(), self.data.len());
         let bytes_read = end - offset as usize;
-        buf[..bytes_read].copy_from_slice(&data[offset as usize..end]);
+        buf[..bytes_read].copy_from_slice(&self.data[offset as usize..end]);
         Ok(bytes_read)
     }
 
@@ -183,12 +182,12 @@ mod tests {
         vfs.create_file("test.db", |conn| {
             conn.execute_batch(
                 "
-                CREATE TABLE test (
-                    id INTEGER PRIMARY KEY,
-                    value TEXT
-                );
-                INSERT INTO test (value) VALUES ('hello'), ('world');
-            ",
+                    CREATE TABLE test (
+                        id INTEGER PRIMARY KEY,
+                        value TEXT
+                    );
+                    INSERT INTO test (value) VALUES ('hello'), ('world');
+                ",
             )?;
             Ok(())
         })?;
@@ -205,8 +204,8 @@ mod tests {
         assert_eq!(
             values,
             ["hello", "world"]
-                .iter()
-                .map(|s| s.to_owned())
+                .into_iter()
+                .map(String::from)
                 .collect::<Vec<_>>()
         );
 
@@ -226,14 +225,14 @@ mod tests {
             assert_eq!(count, 2);
         }
 
-        // Make sure that you can remove the file from the VFS and still read it
+        // Make sure that you can remove the file from the VFS and still read it.
         vfs.remove_file("test.db");
 
-        // Can't open now
+        // Can't open now.
         let result = Connection::open_with_flags_and_vfs("test.db", OpenFlags::default(), "memvfs");
         assert!(result.is_err());
 
-        // But existing connections still work
+        // But existing connections still work.
         let count: i64 = conn1.query_one(
             "
                 SELECT COUNT(*)
@@ -244,7 +243,7 @@ mod tests {
         )?;
         assert_eq!(count, 2);
 
-        // Can add the file again with different content
+        // Can add the file again with different content.
         vfs.create_file("test.db", |conn| {
             conn.execute_batch(
                 "
@@ -270,12 +269,12 @@ mod tests {
         assert_eq!(
             values,
             ["foo", "bar", "baz"]
-                .iter()
-                .map(|s| s.to_owned())
+                .into_iter()
+                .map(String::from)
                 .collect::<Vec<_>>()
         );
 
-        // Make sure existing connections still work when the VFS is unregistered
+        // Make sure existing connections still work when the VFS is unregistered.
         drop(vfs);
 
         let count: i64 = conn1.query_one(

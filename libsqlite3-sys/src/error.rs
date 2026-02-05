@@ -237,9 +237,9 @@ mod test {
     fn test_result_conversion() {
         assert_eq!(Ok(()).into_rc(), SQLITE_OK);
         assert_eq!(
-            Result::<(), Error>::Err(Error::new(SQLITE_ERROR)).into_rc(),
+            Result::<(), _>::Err(Error::new(SQLITE_ERROR)).into_rc(),
             SQLITE_ERROR
         );
-        assert!(!Result::<(), Error>::from_rc(SQLITE_ERROR).is_ok());
+        assert!(!Result::<(), _>::from_rc(SQLITE_ERROR).is_ok());
     }
 }

@@ -568,7 +568,7 @@ impl error::Error for PragmaError {}
 
 /// Represents the connection busy handler callback.
 ///
-/// See
+/// See [`sqlite3_busy_handler`](https://sqlite.org/c3ref/busy_handler.html)
 pub struct BusyHandler {
     handler: extern "C" fn(*mut c_void) -> c_int,
     arg: *mut c_void,
@@ -639,16 +639,6 @@ impl WalLockMode {
         }
     }
 
-    fn from_raw_unchecked(raw: c_int) -> Self {
-        if (raw & sqlite3::SQLITE_SHM_SHARED) != 0 {
-            WalLockMode::Shared
-        } else if (raw & sqlite3::SQLITE_SHM_EXCLUSIVE) != 0 {
-            WalLockMode::Exclusive
-        } else {
-            panic!("internal error: invalid wal lock mode");
-        }
-    }
-
     /// Converts to raw SQLite flags.
     pub fn to_raw(&self) -> c_int {
         match self {
@@ -703,11 +693,11 @@ impl WalLock {
 
     /// Returns true if the given read lock index is included.
     /// index must be in 0..5.
-    pub fn read(&self, index: usize) -> bool {
+    pub fn read(&self, index: usize) -> Result<bool> {
         if index >= 5 {
-            panic!("internal error: wal read lock index out of range");
+            return Err(Error::new(sqlite3::SQLITE_MISUSE));
         }
-        self.mask & (1 << (Self::WAL_READ_LOCK_0 + index)) != 0
+        Ok(self.mask & (1 << (Self::WAL_READ_LOCK_0 + index)) != 0)
     }
 }
 
@@ -776,21 +766,21 @@ impl LockLevel {
 /// See [Device Characteristics](https://sqlite.org/c3ref/c_iocap_atomic.html).
 #[derive(Clone, Debug, Default)]
 pub struct IoCapabilities {
-    /// Mirrors SQLITE_IOCAP_ATOMIC*; captures the atomic write guarantee.
+    /// Mirrors `SQLITE_IOCAP_ATOMIC*`; captures the atomic write guarantee.
     pub atomic_write: AtomicWrite,
-    /// Mirrors SQLITE_IOCAP_SAFE_APPEND; data grows before the file length.
+    /// Mirrors `SQLITE_IOCAP_SAFE_APPEND`; data grows before the file length.
     pub safe_append: bool,
-    /// Mirrors SQLITE_IOCAP_SEQUENTIAL; writes reach storage in call order.
+    /// Mirrors `SQLITE_IOCAP_SEQUENTIAL`; writes reach storage in call order.
     pub sequential: bool,
-    /// Mirrors SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN; prevents unlink while open.
+    /// Mirrors `SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN`; prevents unlink while open.
     pub undeletable_when_open: bool,
-    /// Mirrors SQLITE_IOCAP_POWERSAFE_OVERWRITE; crashes leave neighbors intact.
+    /// Mirrors `SQLITE_IOCAP_POWERSAFE_OVERWRITE`; crashes leave neighbors intact.
     pub powersafe_overwrite: bool,
-    /// Mirrors SQLITE_IOCAP_IMMUTABLE; indicates read-only backing media.
+    /// Mirrors `SQLITE_IOCAP_IMMUTABLE`; indicates read-only backing media.
     pub immutable: bool,
-    /// Mirrors SQLITE_IOCAP_BATCH_ATOMIC; honors begin/commit atomic writes.
+    /// Mirrors `SQLITE_IOCAP_BATCH_ATOMIC`; honors begin/commit atomic writes.
     pub batch_atomic: bool,
-    /// Mirrors SQLITE_IOCAP_SUBPAGE_READ; permits unaligned reads beyond header.
+    /// Mirrors `SQLITE_IOCAP_SUBPAGE_READ`; permits unaligned reads beyond header.
     pub subpage_read: bool,
 }
 
@@ -1127,7 +1117,7 @@ impl<T: Vfs, M: VfsMethodTableExt> VfsRegistration<T, M> {
 
             let base = sqlite3_vfs {
                 iVersion: 2,
-                szOsFile: std::mem::size_of::<VfsFileStorage<T>>() as c_int,
+                szOsFile: mem::size_of::<VfsFileStorage<T>>() as c_int,
                 mxPathname: max_pathlen as c_int,
                 pNext: ptr::null_mut(),
                 zName: name.as_ptr(),
@@ -1400,7 +1390,7 @@ unsafe extern "C" fn x_full_pathname<T: Vfs>(
 ) -> c_int {
     let storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
     let name = unsafe { CStr::from_ptr(name) };
-    let out_len = std::mem::size_of::<c_char>() * n_out as usize;
+    let out_len = mem::size_of::<c_char>() * n_out as usize;
     let out_slice = unsafe { slice::from_raw_parts_mut(out as *mut u8, out_len) };
 
     storage
@@ -1449,7 +1439,11 @@ unsafe extern "C" fn x_dlsym(
     p: *mut c_void,
     sym: *const c_char,
 ) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)> {
-    Some(unsafe { std::mem::transmute(dlsym(p, sym)) })
+    Some(unsafe {
+        mem::transmute::<_, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)>(dlsym(
+            p, sym,
+        ))
+    })
 }
 
 unsafe extern "C" fn x_dlclose(_: *mut sqlite3_vfs, handle: *mut core::ffi::c_void) {
@@ -1958,7 +1952,10 @@ where
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
     let file = storage.file();
-    let lock_mode = WalLockMode::from_raw_unchecked(flags);
+    let lock_mode = match WalLockMode::try_from_raw(flags) {
+        Ok(mode) => mode,
+        Err(_) => return sqlite3::SQLITE_MISUSE,
+    };
     let wal_lock = WalLock::new(offset as usize, n as usize);
 
     if (flags & sqlite3::SQLITE_SHM_LOCK) != 0 {
@@ -1966,7 +1963,7 @@ where
     } else if (flags & sqlite3::SQLITE_SHM_UNLOCK) != 0 {
         file.unlock_shm(wal_lock, lock_mode).into_rc()
     } else {
-        panic!("internal error: invalid shm lock flags");
+        return sqlite3::SQLITE_MISUSE;
     }
 }
 
@@ -2222,7 +2219,7 @@ mod tests {
         let db_path = tempdir.path().join("test.db");
         let conn = Connection::open_with_flags_and_vfs(
             db_path.to_str().unwrap(),
-            crate::OpenFlags::SQLITE_OPEN_READ_WRITE | crate::OpenFlags::SQLITE_OPEN_CREATE,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
             "base",
         )
         .unwrap();
@@ -2273,7 +2270,7 @@ mod tests {
         let db_path = tempdir.path().join("test.db");
         let conn = Connection::open_with_flags_and_vfs(
             db_path.to_str().unwrap(),
-            crate::OpenFlags::SQLITE_OPEN_READ_WRITE | crate::OpenFlags::SQLITE_OPEN_CREATE,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
             "fetch",
         )
         .unwrap();
@@ -2324,7 +2321,7 @@ mod tests {
         let db_path = tempdir.path().join("test.db");
         let conn = Connection::open_with_flags_and_vfs(
             db_path.to_str().unwrap(),
-            crate::OpenFlags::SQLITE_OPEN_READ_WRITE | crate::OpenFlags::SQLITE_OPEN_CREATE,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
             "wal",
         )
         .unwrap();
@@ -2376,7 +2373,7 @@ mod tests {
         let db_path = tempdir.path().join("test.db");
         let conn = Connection::open_with_flags_and_vfs(
             db_path.to_str().unwrap(),
-            crate::OpenFlags::SQLITE_OPEN_READ_WRITE | crate::OpenFlags::SQLITE_OPEN_CREATE,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
             "full",
         )
         .unwrap();
