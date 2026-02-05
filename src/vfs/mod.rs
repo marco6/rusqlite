@@ -1,4 +1,15 @@
-/// An read-only in-memory VFS implementation for SQLite databases.
+//! Create virtual file systems.
+//!
+//! Follow these steps to create your own VFS:
+//!
+//! 1. Write an implementation of the [`Vfs`] and [`VfsFile`] traits.
+//! 2. Optionally write implementations of the [`VfsWalFile`] and [`VfsFetchFile`] traits.
+//! 3. Create [`VfsRegistration`] for the VFS from step 1 and configure it.
+//! 4. Call [`VfsRegistration::register`].
+//! 5. Open a connection with [`Connection::open_with_flags_and_vfs`].
+//!
+//! (See [SQLite doc](https://sqlite.org/vfs.html))
+
 pub mod memvfs;
 
 use libsqlite3_sys as sqlite3;
@@ -53,7 +64,7 @@ impl<T> WriteOutputResultExt<T> for Result<T> {
 
 /// Represents a sqlite virtual file system.
 ///
-/// This trait abstracts [sqlite3_vfs](https://www.sqlite.org/c3ref/vfs.html).
+/// This trait abstracts [`sqlite3_vfs`](https://www.sqlite.org/c3ref/vfs.html).
 pub trait Vfs: Sync {
     /// The type of files stored within this VFS.
     type File: VfsFile;
@@ -118,7 +129,7 @@ pub trait Vfs: Sync {
 
 /// The type of file being opened.
 ///
-/// See [xOpen](https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen)
+/// See [`xOpen`](https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen)
 #[derive(Debug)]
 pub enum FileType<'a> {
     /// Mirrors SQLITE_OPEN_MAIN_DB.
@@ -156,9 +167,9 @@ impl<'a> FileType<'a> {
 bitflags::bitflags! {
     /// Flags used by VFS-backed opens, extending [`crate::OpenFlags`].
     pub struct VfsOpenFlags: c_int {
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_READ_ONLY].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_READ_ONLY`].
         const SQLITE_OPEN_READ_ONLY = sqlite3::SQLITE_OPEN_READONLY;
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_READ_WRITE].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_READ_WRITE`].
         const SQLITE_OPEN_READ_WRITE = sqlite3::SQLITE_OPEN_READWRITE;
         /// Deletes the file when it is closed. See <https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen>.
         const SQLITE_OPEN_DELETE_ON_CLOSE = sqlite3::SQLITE_OPEN_DELETEONCLOSE;
@@ -166,23 +177,23 @@ bitflags::bitflags! {
         const SQLITE_OPEN_EXCLUSIVE = sqlite3::SQLITE_OPEN_EXCLUSIVE;
         /// Enables auto-proxy handling for VFS layering. See <https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen>.
         const SQLITE_OPEN_AUTOPROXY = sqlite3::SQLITE_OPEN_AUTOPROXY;
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_CREATE].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_CREATE`].
         const SQLITE_OPEN_CREATE = sqlite3::SQLITE_OPEN_CREATE;
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_URI].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_URI`].
         const SQLITE_OPEN_URI = sqlite3::SQLITE_OPEN_URI;
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_MEMORY].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_MEMORY`].
         const SQLITE_OPEN_MEMORY = sqlite3::SQLITE_OPEN_MEMORY;
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_NO_MUTEX].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_NO_MUTEX`].
         const SQLITE_OPEN_NO_MUTEX = sqlite3::SQLITE_OPEN_NOMUTEX;
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_FULL_MUTEX].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_FULL_MUTEX`].
         const SQLITE_OPEN_FULL_MUTEX = sqlite3::SQLITE_OPEN_FULLMUTEX;
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_SHARED_CACHE].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_SHARED_CACHE`].
         const SQLITE_OPEN_SHARED_CACHE = 0x0002_0000;
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_PRIVATE_CACHE].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_PRIVATE_CACHE`].
         const SQLITE_OPEN_PRIVATE_CACHE = 0x0004_0000;
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_NOFOLLOW].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_NOFOLLOW`].
         const SQLITE_OPEN_NOFOLLOW = 0x0100_0000;
-        /// Mirrors [crate::OpenFlags::SQLITE_OPEN_EXRESCODE].
+        /// Mirrors [`OpenFlags::SQLITE_OPEN_EXRESCODE`].
         const SQLITE_OPEN_EXRESCODE = 0x0200_0000;
     }
 }
@@ -235,7 +246,7 @@ impl<T> OpenFile<T> {
         }
     }
 
-    /// Marks the file as readonly. See [SQLITE_OPEN_READONLY](https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen).
+    /// Marks the file as readonly. See [`SQLITE_OPEN_READONLY`](https://sqlite.org/c3ref/vfs.html#sqlite3vfsxopen).
     pub fn readonly(mut self) -> Self {
         self.readonly = true;
         self
@@ -618,7 +629,7 @@ pub trait VfsWalFile: VfsFile {
 
 /// Lock mode for WAL shared-memory operations.
 ///
-/// See [Flags for xShmLock](https://sqlite.org/c3ref/c_shm_exclusive.html).
+/// See [Flags for `xShmLock`](https://sqlite.org/c3ref/c_shm_exclusive.html).
 #[derive(Copy, Clone, Debug)]
 pub enum WalLockMode {
     /// Mirrors [`SQLITE_SHM_SHARED`](https://sqlite.org/c3ref/c_shm_exclusive.html).
@@ -903,23 +914,23 @@ pub enum AtomicWrite {
     /// No SQLITE_IOCAP_ATOMIC* bits are set.
     #[default]
     Never,
-    /// Mirrors size-specific SQLITE_IOCAP_ATOMICnnn bitfields.
+    /// Mirrors size-specific `SQLITE_IOCAP_ATOMICnnn` bitfields.
     Block {
-        /// SQLITE_IOCAP_ATOMIC512
+        /// Mirrors to `SQLITE_IOCAP_ATOMIC512`.
         size_512: bool,
-        /// SQLITE_IOCAP_ATOMIC1K
+        /// Mirrors to `SQLITE_IOCAP_ATOMIC1K`.
         size_1k: bool,
-        /// SQLITE_IOCAP_ATOMIC2K
+        /// Mirrors to `SQLITE_IOCAP_ATOMIC2K`.
         size_2k: bool,
-        /// SQLITE_IOCAP_ATOMIC4K
+        /// Mirrors to `SQLITE_IOCAP_ATOMIC4K`.
         size_4k: bool,
-        /// SQLITE_IOCAP_ATOMIC8K
+        /// Mirrors to `SQLITE_IOCAP_ATOMIC8K`.
         size_8k: bool,
-        /// SQLITE_IOCAP_ATOMIC16K
+        /// Mirrors to `SQLITE_IOCAP_ATOMIC16K`.
         size_16k: bool,
-        /// SQLITE_IOCAP_ATOMIC32K
+        /// Mirrors to `SQLITE_IOCAP_ATOMIC32K`.
         size_32k: bool,
-        /// SQLITE_IOCAP_ATOMIC64K
+        /// Mirrors to `SQLITE_IOCAP_ATOMIC64K`.
         size_64k: bool,
     },
     /// Mirrors SQLITE_IOCAP_ATOMIC.

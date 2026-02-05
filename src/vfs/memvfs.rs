@@ -1,3 +1,5 @@
+//! A read-only in-memory VFS implementation for SQLite databases.
+
 use std::{
     collections::HashMap,
     ffi::OsString,
