@@ -10,6 +10,7 @@
 //!
 //! (See [SQLite doc](https://sqlite.org/vfs.html))
 
+#[cfg(feature = "memvfs")]
 pub mod memvfs;
 
 use libsqlite3_sys as sqlite3;

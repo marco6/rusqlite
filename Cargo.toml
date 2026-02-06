@@ -57,7 +57,10 @@ bundled-sqlcipher-vendored-openssl = [
     "libsqlite3-sys/bundled-sqlcipher-vendored-openssl",
     "bundled-sqlcipher",
 ]
-buildtime_bindgen = ["libsqlite3-sys/buildtime_bindgen", "sqlite-wasm-rs/bindgen"]
+buildtime_bindgen = [
+    "libsqlite3-sys/buildtime_bindgen",
+    "sqlite-wasm-rs/bindgen",
+]
 # sqlite3_limit
 limits = []
 # Used to generate a cdylib
@@ -72,11 +75,12 @@ i128_blob = []
 sqlcipher = ["libsqlite3-sys/sqlcipher"]
 # SQLITE_ENABLE_UNLOCK_NOTIFY
 unlock_notify = ["libsqlite3-sys/unlock_notify"]
+# sqlite3_vfs
+vfs = ["modern_sqlite", "dep:rand"]
+memvfs = ["vfs"]
 # if not SQLITE_OMIT_VIRTUALTABLE
 # sqlite3_vtab
 vtab = []
-# sqlite3_vfs
-vfs = ["modern_sqlite", "dep:rand"]
 csvtab = ["csv", "vtab"]
 # Port of Carray() table-valued function
 array = ["vtab"]
@@ -179,8 +183,12 @@ libsqlite3-sys = { path = "libsqlite3-sys", version = "0.36.0" }
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
 sqlite-wasm-rs = { version = "0.5.1", default-features = false }
-chrono = { version = "0.4.38", optional = true, default-features = false, features = ["wasmbind"] }
-jiff = { version = "0.2", optional = true, default-features = false, features = ["js"] }
+chrono = { version = "0.4.38", optional = true, default-features = false, features = [
+    "wasmbind",
+] }
+jiff = { version = "0.2", optional = true, default-features = false, features = [
+    "js",
+] }
 time = { version = "0.3.36", optional = true, features = ["wasm-bindgen"] }
 uuid = { version = "1.0", optional = true, features = ["js"] }
 
