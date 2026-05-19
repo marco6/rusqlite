@@ -16,7 +16,7 @@ pub mod memvfs;
 use crate::ffi::{
     sqlite3_file, sqlite3_filename, sqlite3_int64, sqlite3_io_methods, sqlite3_vfs, Error,
 };
-use crate::{ffi as sqlite3, vfs};
+use crate::{ffi as sqlite3, vfs, Name};
 use libsqlite3_sys::{sqlite3_malloc, SQLITE_NOMEM};
 use rand::RngCore;
 use std::borrow::Cow;
@@ -1283,7 +1283,7 @@ struct VfsStorage<V> {
     vfs: V,
 }
 
-impl<T> VfsStorage<T> {
+impl<T: Vfs> VfsStorage<T> {
     unsafe fn from_raw(ptr: *mut sqlite3_vfs) -> Arc<Self> {
         let vfs = unsafe { ptr.as_ref() }.expect("cannot get reference to empty vfs storage");
         let storage_ptr = vfs.pAppData.cast::<VfsStorage<T>>();
@@ -1303,11 +1303,15 @@ struct VfsFileStorage<T: Vfs> {
     state: FileStorageState<T>,
 }
 
+#[repr(C)]
+struct OpenFileState<T: Vfs> {
+    vfs: Arc<VfsStorage<T>>,
+    file: T::File,
+}
+
+#[repr(C, u8)]
 enum FileStorageState<T: Vfs> {
-    Open {
-        vfs: Arc<VfsStorage<T>>,
-        file: T::File,
-    },
+    Open(OpenFileState<T>),
     Closed,
 }
 
@@ -1323,16 +1327,28 @@ impl<T: Vfs> VfsFileStorage<T> {
         }
     }
 
+    unsafe fn from_file(file: &T::File) -> &Self {
+        use mem::offset_of;
+        let state_ptr = file as *const T::File as *const u8;
+
+        let enum_offset = offset_of!(Self, state);
+        let payload_offset = mem::align_of::<OpenFileState<T>>();
+        let file_offset = offset_of!(OpenFileState<T>, file);
+        let offset = enum_offset + payload_offset + file_offset;
+        let base_ptr = state_ptr.sub(offset).cast::<VfsFileStorage<T>>();
+        unsafe { base_ptr.as_ref().unwrap() }
+    }
+
     fn file(&mut self) -> &mut T::File {
         match &mut self.state {
-            FileStorageState::Open { file, .. } => file,
+            FileStorageState::Open(open_state) => &mut open_state.file,
             FileStorageState::Closed => panic!("internal error: file already closed"),
         }
     }
 
     fn vfs(&self) -> &VfsStorage<T> {
         match &self.state {
-            FileStorageState::Open { vfs, .. } => vfs,
+            FileStorageState::Open(open_state) => &open_state.vfs,
             FileStorageState::Closed => panic!("internal error: file already closed"),
         }
     }
@@ -1395,10 +1411,10 @@ unsafe extern "C" fn x_open<T: Vfs, M: VfsMethodTableExt>(
         base: sqlite3_file {
             pMethods: methods as *const _,
         },
-        state: FileStorageState::Open {
+        state: FileStorageState::Open(OpenFileState {
             vfs: vfs_storage,
             file: open_file.file,
-        },
+        }),
     };
     unsafe {
         out.cast::<VfsFileStorage<T>>().write(storage);
@@ -2245,6 +2261,89 @@ where
     }
 }
 
+/// Extension trait for retrieving a VFS instance from a connection.
+///
+/// This trait provides methods to access the underlying VFS implementation for a given schema.
+pub trait VfsConnectionExt {
+    /// Retrieves the VFS instance for the specified schema.
+    ///
+    /// # Arguments
+    /// * `conn` - The database connection
+    /// * `schema` - The schema name (e.g., "main", "temp")
+    ///
+    /// # Returns
+    /// A dereferenceable reference to the VFS implementation, or an error if the schema
+    /// is not associated with this VFS type.
+    fn vfs<T: Vfs, N: Name>(conn: &Self, schema: N) -> crate::Result<impl Deref<Target = T>>;
+}
+
+impl VfsConnectionExt for Connection {
+    fn vfs<T: Vfs, N: Name>(conn: &Self, schema: N) -> crate::Result<impl Deref<Target = T>> {
+        let schema = schema.as_cstr()?;
+        let mut vfs_ptr: *mut c_void = ptr::null_mut();
+        let rc = unsafe {
+            sqlite3::sqlite3_file_control(
+                conn.handle(),
+                schema.as_ptr(),
+                sqlite3::SQLITE_FCNTL_VFS_POINTER,
+                mem::transmute::<_, *mut c_void>(&mut vfs_ptr),
+            )
+        };
+        if rc != sqlite3::SQLITE_OK {
+            // TODO: better error message, including the schema name.
+            return Err(Error::new(rc).into());
+        }
+        let vfs = unsafe {
+            vfs_ptr
+                .cast::<sqlite3_vfs>()
+                .as_mut()
+                .expect("internal error: null VFS")
+        };
+
+        // SAFETY: we need to check that the VFS we got back can be actually converted to `VfsStorage<T>`.
+        // A way to do that is to check that the object contains the right function pointers. The best would be
+        // `xOpen`, but that is not directly tied to the storage as the same storage can be registered for
+        // multiple iVersions. `xDelete` is the next best candidate.
+        let x_delete: unsafe extern "C" fn(*mut sqlite3_vfs, *const c_char, c_int) -> c_int =
+            x_delete::<T>;
+        match vfs.xDelete {
+            Some(func) if ptr::fn_addr_eq(func, x_delete) => {}
+            _ => {
+                // The VFS pointer we got from SQLite does not match the expected function pointers for our VFS implementation.
+                // This likely means that the schema exists but is not associated with our VFS. We return an error in this case.
+                return Err(Error::new(sqlite3::SQLITE_NOTFOUND).into());
+            }
+        }
+        let storage = unsafe { VfsStorage::<T>::from_raw(vfs) };
+        struct VfsGuard<T>(Arc<VfsStorage<T>>);
+        impl<T> Deref for VfsGuard<T> {
+            type Target = T;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0.vfs
+            }
+        }
+        Ok(VfsGuard(storage))
+    }
+}
+
+/// Extension trait for retrieving the VFS from a file instance.
+///
+/// # Safety
+/// This is an unsafe trait because it relies on the file being properly initialized
+/// with a valid VFS storage reference.
+pub unsafe trait VfsFileExt<T> {
+    /// Retrieves the VFS instance that owns this file.
+    fn vfs(file: &Self) -> &T;
+}
+
+unsafe impl<T: Vfs> VfsFileExt<T> for T::File {
+    fn vfs(file: &Self) -> &T {
+        let storage = unsafe { VfsFileStorage::<T>::from_file(file) };
+        &storage.vfs().vfs
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -2255,9 +2354,7 @@ mod tests {
         time::{Duration, SystemTime},
     };
 
-    use crate::ffi as sqlite3;
-
-    use crate::Connection;
+    use crate::{ffi as sqlite3, Connection};
 
     use super::*;
 
@@ -2392,6 +2489,50 @@ mod tests {
 
         fn unfetch_all(&mut self) -> Result<()> {
             Err(Error::new(sqlite3::SQLITE_ERROR))
+        }
+    }
+
+    struct OtherVfs;
+
+    impl Vfs for OtherVfs {
+        type File = DummyFile;
+
+        fn open(&self, _path: FileType<'_>, _flags: VfsOpenFlags) -> Result<OpenFile<Self::File>> {
+            Ok(OpenFile::new(DummyFile))
+        }
+
+        fn delete(&self, _path: VfsPath<'_>, _sync: bool) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_full_path(&self, path: VfsPath<'_>, mut out: &mut [u8]) -> Result<usize> {
+            Ok(out.write(path.as_bytes()).unwrap())
+        }
+
+        fn fill_random_bytes(&self, _out: &mut [u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn sleep(&self, _duration: Duration) {}
+
+        fn now(&self) -> Result<SystemTime> {
+            Ok(SystemTime::now())
+        }
+
+        fn last_error(&self) -> i32 {
+            0
+        }
+
+        fn exists(&self, _name: VfsPath<'_>) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn can_read(&self, _name: VfsPath<'_>) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn can_write(&self, _name: VfsPath<'_>) -> Result<bool> {
+            Ok(true)
         }
     }
 
@@ -2633,5 +2774,54 @@ mod tests {
             sqlite3::SQLITE_ERROR
         );
         assert!(Result::<(), _>::from_rc(sqlite3::SQLITE_ERROR).is_err());
+    }
+
+    #[test]
+    fn test_connection_vfs_lookup() {
+        let token = VfsRegistration::new(DummyVfs).register("lookup").unwrap();
+
+        let conn = Connection::open_with_flags_and_vfs(
+            "foo",
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+            "lookup",
+        )
+        .unwrap();
+
+        let looked_up = <Connection as VfsConnectionExt>::vfs(&conn, "main").unwrap();
+        assert!(ptr::eq(&*looked_up, &*token));
+        let rejected = <Connection as VfsConnectionExt>::vfs::<OtherVfs, _>(&conn, "main");
+        assert!(matches!(rejected, Err(_)));
+    }
+
+    #[test]
+    fn test_file_vfs_lookup() {
+        let token = VfsRegistration::new(DummyVfs)
+            .register("file_lookup")
+            .unwrap();
+
+        let conn = Connection::open_with_flags_and_vfs(
+            "foo",
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+            "file_lookup",
+        )
+        .unwrap();
+
+        let file_ptr = unsafe {
+            let mut file_ptr: *mut sqlite3::sqlite3_file = std::ptr::null_mut();
+            let rc = sqlite3::sqlite3_file_control(
+                conn.handle(),
+                std::ptr::null(),
+                sqlite3::SQLITE_FCNTL_FILE_POINTER,
+                &mut file_ptr as *mut _ as *mut std::ffi::c_void,
+            );
+            assert_eq!(rc, sqlite3::SQLITE_OK);
+            assert!(!file_ptr.is_null());
+            file_ptr
+        };
+
+        let storage = unsafe { VfsFileStorage::<DummyVfs>::from_raw(file_ptr) };
+        let file = storage.file();
+        let looked_up = <DummyFile as VfsFileExt<DummyVfs>>::vfs(file);
+        assert!(ptr::eq(looked_up, &*token));
     }
 }
