@@ -2261,10 +2261,7 @@ where
     }
 }
 
-/// Extension trait for retrieving a VFS instance from a connection.
-///
-/// This trait provides methods to access the underlying VFS implementation for a given schema.
-pub trait VfsConnectionExt {
+impl Connection {
     /// Retrieves the VFS instance for the specified schema.
     ///
     /// # Arguments
@@ -2274,16 +2271,12 @@ pub trait VfsConnectionExt {
     /// # Returns
     /// A dereferenceable reference to the VFS implementation, or an error if the schema
     /// is not associated with this VFS type.
-    fn vfs<T: Vfs, N: Name>(conn: &Self, schema: N) -> crate::Result<impl Deref<Target = T>>;
-}
-
-impl VfsConnectionExt for Connection {
-    fn vfs<T: Vfs, N: Name>(conn: &Self, schema: N) -> crate::Result<impl Deref<Target = T>> {
+    pub fn vfs<T: Vfs, N: Name>(&self, schema: N) -> crate::Result<impl Deref<Target = T>> {
         let schema = schema.as_cstr()?;
         let mut vfs_ptr: *mut c_void = ptr::null_mut();
         let rc = unsafe {
             sqlite3::sqlite3_file_control(
-                conn.handle(),
+                self.handle(),
                 schema.as_ptr(),
                 sqlite3::SQLITE_FCNTL_VFS_POINTER,
                 mem::transmute::<_, *mut c_void>(&mut vfs_ptr),
@@ -2328,17 +2321,21 @@ impl VfsConnectionExt for Connection {
 }
 
 /// Extension trait for retrieving the VFS from a file instance.
-///
-/// # Safety
-/// This is an unsafe trait because it relies on the file being properly initialized
-/// with a valid VFS storage reference.
-pub unsafe trait VfsFileExt<T> {
-    /// Retrieves the VFS instance that owns this file.
-    fn vfs(file: &Self) -> &T;
+pub unsafe trait VfsFileExt
+where
+    Self: Vfs,
+{
+    /// Retrieves a reference to the VFS that owns this file.
+    ///
+    /// # Safety
+    /// This is unsafe because it relies on the file being owned by the VFS (i.e.
+    /// part of a valid VFS storage reference). It should be used only inside the
+    /// methods implementing [VfsFile], [VfsWalFile], or [VfsFetchFile].
+    fn from_file(file: &Self::File) -> &Self;
 }
 
-unsafe impl<T: Vfs> VfsFileExt<T> for T::File {
-    fn vfs(file: &Self) -> &T {
+unsafe impl<T: Vfs> VfsFileExt for T {
+    fn from_file(file: &Self::File) -> &Self {
         let storage = unsafe { VfsFileStorage::<T>::from_file(file) };
         &storage.vfs().vfs
     }
@@ -2787,9 +2784,9 @@ mod tests {
         )
         .unwrap();
 
-        let looked_up = <Connection as VfsConnectionExt>::vfs(&conn, "main").unwrap();
+        let looked_up = conn.vfs("main").unwrap();
         assert!(ptr::eq(&*looked_up, &*token));
-        let rejected = <Connection as VfsConnectionExt>::vfs::<OtherVfs, _>(&conn, "main");
+        let rejected = conn.vfs::<OtherVfs, _>("main");
         assert!(matches!(rejected, Err(_)));
     }
 
@@ -2821,7 +2818,7 @@ mod tests {
 
         let storage = unsafe { VfsFileStorage::<DummyVfs>::from_raw(file_ptr) };
         let file = storage.file();
-        let looked_up = <DummyFile as VfsFileExt<DummyVfs>>::vfs(file);
+        let looked_up = DummyVfs::from_file(file);
         assert!(ptr::eq(looked_up, &*token));
     }
 }
