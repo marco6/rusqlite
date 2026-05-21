@@ -24,7 +24,7 @@ use std::ffi::{c_char, c_int, CStr, CString, OsStr};
 use std::fmt::{self, Display};
 use std::marker::PhantomData;
 use std::num::NonZero;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::os::raw::c_void;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{self, Ordering};
@@ -1323,7 +1323,14 @@ impl<T: Vfs> VfsFileStorage<T> {
         }
     }
 
-    fn file(&mut self) -> &mut T::File {
+    fn file(&self) -> &T::File {
+        match &self.state {
+            FileStorageState::Open { file, .. } => file,
+            FileStorageState::Closed => panic!("internal error: file already closed"),
+        }
+    }
+
+    fn file_mut(&mut self) -> &mut T::File {
         match &mut self.state {
             FileStorageState::Open { file, .. } => file,
             FileStorageState::Closed => panic!("internal error: file already closed"),
@@ -1725,7 +1732,7 @@ unsafe extern "C" fn x_read<T: Vfs>(
     offset: i64,
 ) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     let buf = unsafe { slice::from_raw_parts_mut(data as *mut u8, amount as usize) };
     file.read_at(buf, offset as u64)
         .and_then(|size| {
@@ -1747,20 +1754,20 @@ unsafe extern "C" fn x_write<T: Vfs>(
     offset: i64,
 ) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     let buf = unsafe { slice::from_raw_parts(data as *const u8, amount as usize) };
     file.write_at(buf, offset as u64).into_rc()
 }
 
 unsafe extern "C" fn x_truncate<T: Vfs>(file: *mut sqlite3_file, size: i64) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     file.truncate(size as u64).into_rc()
 }
 
 unsafe extern "C" fn x_sync<T: Vfs>(file: *mut sqlite3_file, flags: c_int) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     let options = SyncOptions {
         full: (flags & sqlite3::SQLITE_SYNC_FULL) != 0,
         data_only: (flags & sqlite3::SQLITE_SYNC_DATAONLY) != 0,
@@ -1773,7 +1780,7 @@ unsafe extern "C" fn x_file_size<T: Vfs>(
     out_ptr: *mut sqlite3_int64,
 ) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     let out = unsafe {
         out_ptr
             .as_mut()
@@ -1787,14 +1794,14 @@ unsafe extern "C" fn x_file_size<T: Vfs>(
 
 unsafe extern "C" fn x_lock<T: Vfs>(file: *mut sqlite3_file, level: c_int) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     let lock_level = LockLevel::from_raw(level);
     file.lock(lock_level).into_rc()
 }
 
 unsafe extern "C" fn x_unlock<T: Vfs>(file: *mut sqlite3_file, level: c_int) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     let lock_level = LockLevel::from_raw(level);
     file.unlock(lock_level).into_rc()
 }
@@ -1804,7 +1811,7 @@ unsafe extern "C" fn x_check_reserved_lock<T: Vfs>(
     out_ptr: *mut c_int,
 ) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     let out = unsafe {
         out_ptr
             .as_mut()
@@ -1831,7 +1838,7 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
     arg: *mut c_void,
 ) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     match op {
         sqlite3::SQLITE_FCNTL_LOCKSTATE => {
             let level = file.lock_level();
@@ -2115,13 +2122,13 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
 
 unsafe extern "C" fn x_sector_size<T: Vfs>(file: *mut sqlite3_file) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     file.sector_len() as c_int
 }
 
 unsafe extern "C" fn x_device_characteristics<T: Vfs>(file: *mut sqlite3_file) -> c_int {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     file.io_capabilities().to_raw()
 }
 
@@ -2137,7 +2144,7 @@ where
     T: Vfs<File = F>,
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     let out = unsafe {
         out_ptr
             .cast::<*mut u8>()
@@ -2164,7 +2171,7 @@ where
     T: Vfs<File = F>,
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     let lock_mode = match WalLockMode::try_from_raw(flags) {
         Ok(mode) => mode,
         Err(_) => return sqlite3::SQLITE_MISUSE,
@@ -2186,7 +2193,7 @@ where
     T: Vfs<File = F>,
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     file.barrier();
 }
 
@@ -2196,7 +2203,7 @@ where
     T: Vfs<File = F>,
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     file.unmap_shm(delete != 0).into_rc()
 }
 
@@ -2211,7 +2218,7 @@ where
     T: Vfs<File = F>,
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     let out = unsafe {
         out_ptr
             .cast::<*mut u8>()
@@ -2237,11 +2244,111 @@ where
     T: Vfs<File = F>,
 {
     let storage = unsafe { VfsFileStorage::<T>::from_raw(file) };
-    let file = storage.file();
+    let file = storage.file_mut();
     if let Some(ptr) = NonNull::new(ptr as *mut u8) {
         file.unfetch(offset, ptr).into_rc()
     } else {
         file.unfetch_all().into_rc()
+    }
+}
+
+/// Extension trait to recover a registered [`Vfs`] implementation from a raw
+/// [`sqlite3_vfs`] pointer.
+///
+/// This is intended for integration points where SQLite passes `sqlite3_vfs*`
+/// back to Rust and the caller needs access to the original typed VFS.
+pub trait VfsFromRawExt
+where
+    Self: Vfs,
+{
+    /// Obtains a reference to the VFS from a raw pointer to a `sqlite3_vfs` struct.
+    /// If the underlying VFS implementation does not match the expected type, it returns `None`.
+    ///
+    /// # Safety
+    /// 
+    /// The caller must ensure that the raw pointer passed to this function is a valid pointer to a `sqlite3_vfs` struct.
+    /// Once the function returns, the returned reference is always valid, even if the vfs is afterwards unregistered.
+    unsafe fn from_raw(raw: NonNull<sqlite3_vfs>) -> Option<impl Deref<Target = Self>>;
+}
+
+impl<T: Vfs> VfsFromRawExt for T {
+    unsafe fn from_raw(raw: NonNull<sqlite3_vfs>) -> Option<impl Deref<Target = T>> {
+        let vfs = unsafe { raw.as_ref() };
+        // SAFETY: we need to check that the VFS we got back can be actually converted to `VfsStorage<T>`.
+        // A way to do that is to check that the object contains the right function pointers. The best would be
+        // `xOpen`, but that is not directly tied to the storage as the same storage can be registered for
+        // multiple `iVersions`. `xDelete` is the next best candidate.
+        let x_delete: unsafe extern "C" fn(*mut sqlite3_vfs, *const c_char, c_int) -> c_int =
+            x_delete::<T>;
+
+        match vfs.xDelete {
+            Some(func) if ptr::fn_addr_eq(func, x_delete) => {}
+            _ => {
+                // The VFS pointer we got from SQLite does not match the expected function pointers for our VFS implementation.
+                // This likely means that the schema exists but is not associated with our VFS. We return `None` in this case.
+                return None;
+            }
+        }
+        let storage = unsafe { VfsStorage::<T>::from_raw(raw.as_ptr()) };
+        struct VfsGuard<T>(Arc<VfsStorage<T>>);
+        impl<T> Deref for VfsGuard<T> {
+            type Target = T;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0.vfs
+            }
+        }
+        Some(VfsGuard(storage))
+    }
+}
+
+/// Extension trait to recover a mutable VFS file handle from a raw
+/// [`sqlite3_file`] pointer.
+///
+/// This is primarily useful in callback-style code where SQLite provides a
+/// `sqlite3_file*` and the implementation needs to access the corresponding
+/// typed [`Vfs::File`].
+pub trait VfsFileFromRawExt<'file>
+where
+    Self: Vfs,
+{
+    /// Obtains a mutable reference to [`Vfs::File`] from a raw `sqlite3_file` pointer.
+    /// If the underlying file implementation does not match the expected type, it returns `None`.
+    ///
+    /// The returned reference is tied to `'file`; callers must ensure that this
+    /// lifetime does not outlive the underlying SQLite-managed file allocation.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must point to a valid `sqlite3_file` created by this crate's VFS
+    /// bridge for the same `Self` implementation.
+    unsafe fn file_from_raw(raw: NonNull<sqlite3_file>) -> Option<&'file mut Self::File>;
+}
+
+impl<'file, T> VfsFileFromRawExt<'file> for T
+where
+    T: Vfs,
+    T: 'file,
+{
+    unsafe fn file_from_raw(raw: NonNull<sqlite3_file>) -> Option<&'file mut Self::File> {
+        let file = unsafe { raw.as_ref() };
+        let methods =
+            unsafe { file.pMethods.as_ref() }?;
+        // SAFETY: see `from_raw` for the rationale behind checking function pointers.
+        let x_write: unsafe extern "C" fn(*mut sqlite3_file, *const c_void, i32, i64) -> c_int =
+            x_write::<T>;
+        match methods.xWrite {
+            Some(func) if ptr::fn_addr_eq(func, x_write) => {}
+            _ => return None,
+        }
+
+        Some(unsafe {
+            raw.as_ptr()
+                .cast::<VfsFileStorage<T>>()
+                .as_mut()
+                .unwrap()
+                .file_mut()
+        })
     }
 }
 
@@ -2263,7 +2370,51 @@ mod tests {
 
     struct DummyVfs;
 
+    struct OtherVfs;
+
     impl Vfs for DummyVfs {
+        type File = DummyFile;
+
+        fn open(&self, _path: FileType<'_>, _flags: VfsOpenFlags) -> Result<OpenFile<Self::File>> {
+            Ok(OpenFile::new(DummyFile))
+        }
+
+        fn delete(&self, _path: VfsPath<'_>, _sync: bool) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_full_path(&self, path: VfsPath<'_>, mut out: &mut [u8]) -> Result<usize> {
+            Ok(out.write(path.as_bytes()).unwrap())
+        }
+
+        fn fill_random_bytes(&self, _out: &mut [u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn sleep(&self, _duration: Duration) {}
+
+        fn now(&self) -> Result<SystemTime> {
+            Ok(SystemTime::now())
+        }
+
+        fn last_error(&self) -> i32 {
+            0
+        }
+
+        fn exists(&self, _name: VfsPath<'_>) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn can_read(&self, _name: VfsPath<'_>) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn can_write(&self, _name: VfsPath<'_>) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    impl Vfs for OtherVfs {
         type File = DummyFile;
 
         fn open(&self, _path: FileType<'_>, _flags: VfsOpenFlags) -> Result<OpenFile<Self::File>> {
@@ -2633,5 +2784,59 @@ mod tests {
             sqlite3::SQLITE_ERROR
         );
         assert!(Result::<(), _>::from_rc(sqlite3::SQLITE_ERROR).is_err());
+    }
+
+    #[test]
+    fn test_vfs_from_raw_ext() {
+        let token = VfsRegistration::new(DummyVfs).register("fromraw").unwrap();
+        let vfs_ptr = unsafe { sqlite3::sqlite3_vfs_find(c"fromraw".as_ptr()) };
+        assert!(!vfs_ptr.is_null());
+        let vfs_ptr = NonNull::new(vfs_ptr).unwrap();
+
+        let vfs = unsafe { DummyVfs::from_raw(vfs_ptr) }.unwrap();
+        assert_eq!(vfs.last_error(), 0);
+
+        let wrong_typed = unsafe { OtherVfs::from_raw(vfs_ptr) };
+        assert!(wrong_typed.is_none());
+
+        drop(token);
+    }
+
+    #[test]
+    fn test_vfs_file_from_raw_ext() {
+        let token = VfsRegistration::new(DummyVfs)
+            .register("filefromraw")
+            .unwrap();
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let db_path = tempdir.path().join("test.db");
+        let conn = Connection::open_with_flags_and_vfs(
+            db_path.to_str().unwrap(),
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+            "filefromraw",
+        )
+        .unwrap();
+
+        let file_ptr = unsafe {
+            let db_handle = conn.handle();
+            let mut file_ptr: *mut sqlite3::sqlite3_file = std::ptr::null_mut();
+            let rc = sqlite3::sqlite3_file_control(
+                db_handle,
+                std::ptr::null(),
+                sqlite3::SQLITE_FCNTL_FILE_POINTER,
+                &mut file_ptr as *mut _ as *mut std::ffi::c_void,
+            );
+            assert_eq!(rc, sqlite3::SQLITE_OK);
+            assert!(!file_ptr.is_null());
+            NonNull::new(file_ptr).unwrap()
+        };
+
+        let file = unsafe { DummyVfs::file_from_raw(file_ptr) }.unwrap();
+        assert_eq!(file.sector_len(), 4096);
+
+        let wrong_typed = unsafe { OtherVfs::file_from_raw(file_ptr) };
+        assert!(wrong_typed.is_none());
+
+        drop(token);
     }
 }
