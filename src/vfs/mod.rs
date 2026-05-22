@@ -24,7 +24,7 @@ use std::ffi::{c_char, c_int, CStr, CString, OsStr};
 use std::fmt::{self, Display};
 use std::marker::PhantomData;
 use std::num::NonZero;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::os::raw::c_void;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{self, Ordering};
@@ -1323,13 +1323,6 @@ impl<T: Vfs> VfsFileStorage<T> {
         }
     }
 
-    fn file(&self) -> &T::File {
-        match &self.state {
-            FileStorageState::Open { file, .. } => file,
-            FileStorageState::Closed => panic!("internal error: file already closed"),
-        }
-    }
-
     fn file_mut(&mut self) -> &mut T::File {
         match &mut self.state {
             FileStorageState::Open { file, .. } => file,
@@ -2270,7 +2263,7 @@ where
     /// If the underlying VFS implementation does not match the expected type, it returns `None`.
     ///
     /// # Safety
-    /// 
+    ///
     /// The caller must ensure that the raw pointer passed to this function is a valid pointer to a `sqlite3_vfs` struct.
     /// Once the function returns, the returned reference is always valid, even if the vfs is afterwards unregistered.
     unsafe fn from_raw(raw: NonNull<sqlite3_vfs>) -> Option<impl Deref<Target = Self>>;
@@ -2337,8 +2330,7 @@ where
 {
     unsafe fn file_from_raw(raw: NonNull<sqlite3_file>) -> Option<&'file mut Self::File> {
         let file = unsafe { raw.as_ref() };
-        let methods =
-            unsafe { file.pMethods.as_ref() }?;
+        let methods = unsafe { file.pMethods.as_ref() }?;
         // SAFETY: see `from_raw` for the rationale behind checking function pointers.
         let x_write: unsafe extern "C" fn(*mut sqlite3_file, *const c_void, i32, i64) -> c_int =
             x_write::<T>;
