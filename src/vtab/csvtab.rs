@@ -31,8 +31,8 @@ use std::str;
 use crate::ffi;
 use crate::types::Null;
 use crate::vtab::{
-    escape_double_quote, parse_boolean, Context, CreateVTab, Filters, IndexInfo, Module, VTab,
-    VTabConfig, VTabConnection, VTabCursor, VTabKind,
+    self, escape_double_quote, parse_boolean, Context, CreateVTab, Filters, IndexInfo, Module,
+    VTab, VTabConfig, VTabConnection, VTabCursor, VTabKind,
 };
 use crate::{Connection, Error, Result};
 
@@ -50,9 +50,9 @@ const MODULE_NAME: &CStr = c"csv";
 /// );
 /// ```
 pub fn load_module(conn: &Connection) -> Result<()> {
-    const MODULE: Module<CsvTab> = Module::read_only_module();
+    const MODULE: &'static Module<CsvTab> = vtab::read_only_module();
     let aux: Option<()> = None;
-    conn.create_module(MODULE_NAME, &MODULE, aux)
+    conn.create_module(MODULE_NAME, MODULE, aux)
 }
 
 /// An instance of the CSV virtual table

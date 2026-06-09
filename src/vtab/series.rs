@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 use crate::ffi;
 use crate::types::Type;
 use crate::vtab::{
-    Context, Filters, IndexConstraintOp, IndexInfo, Module, VTab, VTabConfig, VTabConnection,
+    self, Context, Filters, IndexConstraintOp, IndexInfo, Module, VTab, VTabConfig, VTabConnection,
     VTabCursor,
 };
 use crate::{Connection, Result};
@@ -19,9 +19,9 @@ const MODULE_NAME: &CStr = c"generate_series";
 
 /// Register the `generate_series` module.
 pub fn load_module(conn: &Connection) -> Result<()> {
-    const MODULE: Module<SeriesTab> = Module::eponymous_only_module();
+    const MODULE: &'static Module<SeriesTab> = vtab::eponymous_only_module();
     let aux: Option<()> = None;
-    conn.create_module(MODULE_NAME, &MODULE, aux)
+    conn.create_module(MODULE_NAME, MODULE, aux)
 }
 
 // Column numbers

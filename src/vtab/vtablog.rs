@@ -9,8 +9,8 @@ use fallible_iterator::FallibleIterator as _;
 
 use crate::types::Type;
 use crate::vtab::{
-    Context, CreateVTab, Filters, IndexInfo, Inserts, Module, TransactionVTab, UpdateVTab, Updates,
-    VTab, VTabConnection, VTabCursor, VTabKind,
+    Context, CreateVTab, Filters, IndexInfo, Inserts, Module, TransactionVTab, UpdateVTab,
+    Updates, VTab, VTabConnection, VTabCursor, VTabKind,
 };
 use crate::{ffi, ValueRef};
 use crate::{Connection, Error, Result};
@@ -19,7 +19,10 @@ const MODULE_NAME: &CStr = c"vtablog";
 
 /// Register the "vtablog" module.
 pub fn load_module(conn: &Connection) -> Result<()> {
-    const MODULE: Module<VTabLog> = Module::update_module_with_tx();
+    const MODULE: Module<VTabLog> = Module::new()
+        .with_create()
+        .with_update()
+        .with_transactions();
     let aux: Option<()> = None;
     conn.create_module(MODULE_NAME, &MODULE, aux)
 }

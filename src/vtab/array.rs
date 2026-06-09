@@ -34,7 +34,7 @@ use std::rc::Rc;
 use crate::ffi;
 use crate::types::{ToSql, ToSqlOutput, Value};
 use crate::vtab::{
-    Context, Filters, IndexConstraintOp, IndexInfo, Module, VTab, VTabConnection, VTabCursor,
+    self, Context, Filters, IndexConstraintOp, IndexInfo, Module, VTab, VTabConnection, VTabCursor,
 };
 use crate::{Connection, Result};
 
@@ -55,9 +55,9 @@ impl ToSql for Array {
 
 /// Register the "rarray" module.
 pub fn load_module(conn: &Connection) -> Result<()> {
-    const MODULE: Module<ArrayTab> = Module::eponymous_only_module();
+    const MODULE: &'static Module<ArrayTab> = vtab::eponymous_only_module();
     let aux: Option<()> = None;
-    conn.create_module(MODULE_NAME, &MODULE, aux)
+    conn.create_module(MODULE_NAME, MODULE, aux)
 }
 
 // Column numbers

@@ -233,25 +233,10 @@ impl<'vtab, T: CreateVTab<'vtab>> Module<'vtab, T> {
 
 impl<'vtab, T: UpdateVTab<'vtab>> Module<'vtab, T> {
     /// Enable xUpdate for INSERT/UPDATE/DELETE operations.
-    ///
-    /// Note: This also sets xCreate/xDestroy based on [`VTabKind`].
     #[must_use]
     pub const fn with_update(self) -> Self {
-        let (xcreate, xdestroy) = match T::KIND {
-            VTabKind::EponymousOnly => (None, None),
-            VTabKind::Eponymous => (
-                Some(rust_connect::<T> as unsafe extern "C" fn(_, _, _, _, _, _) -> _),
-                Some(rust_disconnect::<T> as unsafe extern "C" fn(_) -> _),
-            ),
-            VTabKind::Default => (
-                Some(rust_create::<T> as unsafe extern "C" fn(_, _, _, _, _, _) -> _),
-                Some(rust_destroy::<T> as unsafe extern "C" fn(_) -> _),
-            ),
-        };
         Module {
             base: ffi::sqlite3_module {
-                xCreate: xcreate,
-                xDestroy: xdestroy,
                 xUpdate: Some(rust_update::<T>),
                 ..self.base
             },
@@ -552,7 +537,7 @@ pub trait CreateVTab<'vtab>: VTab<'vtab> {
 /// Writable virtual table instance trait.
 ///
 /// (See [SQLite doc](https://sqlite.org/vtab.html#xupdate))
-pub trait UpdateVTab<'vtab>: CreateVTab<'vtab> {
+pub trait UpdateVTab<'vtab>: VTab<'vtab> {
     /// Delete rowid or PK
     fn delete(&mut self, arg: ValueRef<'_>) -> Result<()>;
     /// Insert: `args[0] == NULL: old rowid or PK, args[1]: new rowid or PK,
@@ -578,7 +563,7 @@ pub trait RenameVTab<'vtab>: CreateVTab<'vtab> {
     fn rename(&mut self, new_name: &str) -> Result<()>;
 }
 
-/// Writable virtual table instance with transaction support trait.
+/// Virtual table instance with transaction support trait.
 ///
 /// See [SQLite doc](https://sqlite.org/vtab.html#the_xbegin_method)
 pub trait TransactionVTab<'vtab>: UpdateVTab<'vtab> {
@@ -2006,7 +1991,7 @@ where
     let vt = vtab.cast::<T>();
     let name = match CStr::from_ptr(new_name).to_str() {
         Ok(s) => s,
-        Err(e) => return vtab_error::<()>(vtab, Err(Error::Utf8Error(e))),
+        Err(e) => return vtab_error::<()>(vtab, Err(e.into())),
     };
     vtab_error(vtab, (*vt).rename(name))
 }
@@ -2036,11 +2021,11 @@ where
     let vt = vtab.cast::<T>();
     let schema_str = match CStr::from_ptr(schema).to_str() {
         Ok(s) => s,
-        Err(e) => return vtab_error::<()>(vtab, Err(Error::Utf8Error(e))),
+        Err(e) => return vtab_error::<()>(vtab, Err(e.into())),
     };
     let table_str = match CStr::from_ptr(table).to_str() {
         Ok(s) => s,
-        Err(e) => return vtab_error::<()>(vtab, Err(Error::Utf8Error(e))),
+        Err(e) => return vtab_error::<()>(vtab, Err(e.into())),
     };
     match (*vt).integrity(schema_str, table_str, flags) {
         Ok(None) => ffi::SQLITE_OK,

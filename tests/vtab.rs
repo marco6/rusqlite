@@ -6,7 +6,7 @@ use wasm_bindgen_test::wasm_bindgen_test as test;
 #[test]
 fn test_dummy_module() -> rusqlite::Result<()> {
     use rusqlite::vtab::{
-        sqlite3_vtab, sqlite3_vtab_cursor, Context, Filters, IndexInfo, Module, VTab,
+        self, sqlite3_vtab, sqlite3_vtab_cursor, Context, Filters, IndexInfo, Module, VTab,
         VTabConnection, VTabCursor,
     };
     use rusqlite::{version_number, Connection, Result};
@@ -15,7 +15,7 @@ fn test_dummy_module() -> rusqlite::Result<()> {
     use std::marker::PhantomData;
     use std::os::raw::c_int;
 
-    const MODULE: Module<DummyTab> = Module::eponymous_only_module();
+    const MODULE: &'static Module<DummyTab> = vtab::eponymous_only_module();
 
     #[repr(C)]
     struct DummyTab {
@@ -93,7 +93,7 @@ fn test_dummy_module() -> rusqlite::Result<()> {
 
     let db = Connection::open_in_memory()?;
 
-    db.create_module::<DummyTab, _>(c"dummy", &MODULE, None)?;
+    db.create_module(c"dummy", MODULE, None)?;
 
     let version = version_number();
     if version < 3_009_000 {
