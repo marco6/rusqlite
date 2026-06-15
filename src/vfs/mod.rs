@@ -1597,11 +1597,20 @@ unsafe extern "C" fn x_dlsym(
     p: *mut c_void,
     sym: *const c_char,
 ) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)> {
-    Some(unsafe {
-        mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)>(
-            dlsym(p, sym),
-        )
-    })
+    if p.is_null() || sym.is_null() {
+        return None;
+    }
+
+    let func_ptr = unsafe { dlsym(p, sym) };
+    if func_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe {
+            mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)>(
+                func_ptr,
+            )
+        })
+    }
 }
 
 #[cfg(windows)]
