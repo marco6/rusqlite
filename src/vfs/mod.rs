@@ -1596,9 +1596,9 @@ unsafe extern "C" fn x_dlsym(
     _: *mut sqlite3_vfs,
     p: *mut c_void,
     sym: *const c_char,
-) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)> {
+) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)> {
     Some(unsafe {
-        mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)>(
+        mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)>(
             dlsym(p, sym),
         )
     })
@@ -1609,7 +1609,7 @@ unsafe extern "C" fn x_dlsym(
     _: *mut sqlite3_vfs,
     p: *mut c_void,
     sym: *const c_char,
-) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)> {
+) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)> {
     if p.is_null() || sym.is_null() {
         return None;
     }
@@ -1619,7 +1619,7 @@ unsafe extern "C" fn x_dlsym(
         None
     } else {
         Some(unsafe {
-            mem::transmute::<_, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)>(
+            mem::transmute::<_, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)>(
                 func_ptr,
             )
         })
@@ -1631,7 +1631,7 @@ unsafe extern "C" fn x_dlsym(
     _: *mut sqlite3_vfs,
     _p: *mut c_void,
     _sym: *const c_char,
-) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)> {
+) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)> {
     panic!("dynamic loading is not supported on wasm32-unknown");
 }
 
