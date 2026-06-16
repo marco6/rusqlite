@@ -1597,9 +1597,7 @@ unsafe extern "C" fn x_dlsym(
     p: *mut c_void,
     sym: *const c_char,
 ) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)> {
-    if p.is_null() || sym.is_null() {
-        return None;
-    }
+    assert!(!p.is_null() && !sym.is_null());
 
     let func_ptr = unsafe { dlsym(p, sym) };
     if func_ptr.is_null() {
@@ -1619,9 +1617,7 @@ unsafe extern "C" fn x_dlsym(
     p: *mut c_void,
     sym: *const c_char,
 ) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)> {
-    if p.is_null() || sym.is_null() {
-        return None;
-    }
+    assert!(!p.is_null() && !sym.is_null());
 
     let func_ptr = unsafe { GetProcAddress(p as *mut c_void, sym) };
     if func_ptr.is_null() {
