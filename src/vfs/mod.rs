@@ -1601,14 +1601,14 @@ unsafe extern "C" fn x_dlsym(
 
     let func_ptr = unsafe { dlsym(p, sym) };
     if func_ptr.is_null() {
-        None
-    } else {
-        Some(unsafe {
-            mem::transmute::<*mut c_void, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)>(
-                func_ptr,
-            )
-        })
+        return None;
     }
+    Some(unsafe {
+        mem::transmute::<
+            *mut c_void,
+            unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char),
+        >(func_ptr)
+    })
 }
 
 #[cfg(windows)]
@@ -1621,14 +1621,14 @@ unsafe extern "C" fn x_dlsym(
 
     let func_ptr = unsafe { GetProcAddress(p as *mut c_void, sym) };
     if func_ptr.is_null() {
-        None
-    } else {
-        Some(unsafe {
-            mem::transmute::<_, unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)>(
-                func_ptr,
-            )
-        })
+        return None;
     }
+    Some(unsafe {
+        mem::transmute::<
+            *const c_void,
+            unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char),
+        >(func_ptr)
+    })
 }
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
