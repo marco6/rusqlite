@@ -987,15 +987,13 @@ pub enum AtomicWrite {
 
 /// RAII guard that unregisters a VFS on drop.
 #[must_use]
-#[derive(Clone)]
 pub struct VfsRegistrationGuard<V>(Arc<VfsStorage<V>>);
 
 impl<V> VfsRegistrationGuard<V> {
-    /// Gets the name of the registered VFS.
+    /// Returns the name of this VFS registration.
     pub fn name(&self) -> &str {
-        // SAFETY: The name is guaranteed to be valid UTF-8 as it is
-        // passed in the [`VfsRegistration::register`] method as a `&str`.
-        unsafe { str::from_utf8_unchecked(self.0.name.as_bytes()) }
+        let storage = &self.0;
+        storage.name.to_str().expect("VFS name must be valid UTF-8")
     }
 }
 
