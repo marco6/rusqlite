@@ -563,7 +563,7 @@ pub trait VfsFile {
     ///
     /// This is a "fallback", catch all method for file control operations that are not implemented
     /// by the other methods. As such `op` is always above 100 (i.e. outside the sqlite reserved range)
-    /// and is never one of the opcodes that were registered with `VfsRegistration::register_file_control`.
+    /// and is never one of the opcodes that were registered with [`VfsRegistration::with_file_control`].
     unsafe fn file_control(&mut self, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()> {
         let _ = op;
         let _ = arg;
@@ -658,6 +658,9 @@ impl BusyHandler {
 pub trait VfsFileControl<const OP: c_int>: VfsFile {
     /// The type passed to the custom control operation. This can be "()" if no argument is needed.
     type Target;
+
+    #[doc(hidden)]
+    const ASSERT_OP: () = assert!(OP > 100, "Custom control opcodes must be above 100");
 
     /// Performs the custom control operation.
     fn custom_control(&mut self, arg: Option<&mut Self::Target>) -> Result<()>;
@@ -1035,11 +1038,11 @@ pub struct NoSupport;
 
 #[doc(hidden)]
 pub trait VfsFileControlImpl<T> {
-    fn file_control(file: &mut T, op: i32, arg: Option<NonNull<c_void>>) -> Result<()>;
+    fn file_control(file: &mut T, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()>;
 }
 
 impl<T: VfsFile> VfsFileControlImpl<T> for NoSupport {
-    fn file_control(file: &mut T, op: i32, arg: Option<NonNull<c_void>>) -> Result<()> {
+    fn file_control(file: &mut T, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()> {
         unsafe { file.file_control(op, arg) }
     }
 }
@@ -1058,7 +1061,7 @@ where
     T: VfsFileControl<OP>,
     B: VfsFileControlImpl<T>,
 {
-    fn file_control(file: &mut T, op: i32, arg: Option<NonNull<c_void>>) -> Result<()> {
+    fn file_control(file: &mut T, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()> {
         if op == OP {
             let target = arg.map(|ptr| unsafe { ptr.cast().as_mut() });
             file.custom_control(target)
@@ -1352,6 +1355,7 @@ where
     where
         T::File: VfsFileControl<OP>,
     {
+        let _ = T::File::ASSERT_OP; // Ensure OP is valid at compile time.
         let Self {
             vfs,
             max_pathlen,
@@ -2452,7 +2456,7 @@ mod tests {
             IoCapabilities::default()
         }
 
-        unsafe fn file_control(&mut self, op: i32, _arg: Option<NonNull<c_void>>) -> Result<()> {
+        unsafe fn file_control(&mut self, op: c_int, _arg: Option<NonNull<c_void>>) -> Result<()> {
             if op == 200 {
                 Ok(())
             } else {
@@ -2755,7 +2759,7 @@ mod tests {
             .with_fetch()
             .with_file_control::<201>()
             .with_file_control::<202>()
-            .register("full")
+            .register("control")
             .unwrap();
 
         let tempdir = tempfile::tempdir().unwrap();
@@ -2763,7 +2767,7 @@ mod tests {
         let conn = Connection::open_with_flags_and_vfs(
             db_path.to_str().unwrap(),
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-            "full",
+            "control",
         )
         .unwrap();
 
