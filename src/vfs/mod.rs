@@ -659,9 +659,6 @@ pub trait VfsFileControl<const OP: c_int>: VfsFile {
     /// The type passed to the custom control operation. This can be "()" if no argument is needed.
     type Target;
 
-    #[doc(hidden)]
-    const ASSERT_OP: () = assert!(OP > 100, "Custom control opcodes must be above 100");
-
     /// Performs the custom control operation.
     fn custom_control(&mut self, arg: Option<&mut Self::Target>) -> Result<()>;
 }
@@ -1355,7 +1352,7 @@ where
     where
         T::File: VfsFileControl<OP>,
     {
-        let _ = T::File::ASSERT_OP; // Ensure OP is valid at compile time.
+        const { assert!(OP > 100, "Custom control opcodes must be above 100") };
         let Self {
             vfs,
             max_pathlen,
