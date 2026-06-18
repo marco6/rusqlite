@@ -13,10 +13,11 @@
 #[cfg(all(feature = "memvfs", unix))]
 pub mod memvfs;
 
-use crate::ffi as sqlite3;
 use crate::ffi::{
     sqlite3_file, sqlite3_filename, sqlite3_int64, sqlite3_io_methods, sqlite3_vfs, Error,
 };
+use crate::util::Named;
+use crate::{ffi as sqlite3};
 use libsqlite3_sys::sqlite3_malloc;
 use rand::RngCore;
 use std::borrow::Cow;
@@ -652,15 +653,34 @@ impl BusyHandler {
     }
 }
 
+/// Represents a custom file control operation for a [`VfsFile`].
+pub trait VfsFileControlDefinition {
+    /// The opcode for this control operation. Must be above 100 (the SQLite reserved range) or the registration will fail.
+    const OP: c_int;
+
+    /// The VFS type this control operation is for.
+    type Vfs: Vfs;
+
+    /// The type of the argument for this control operation.
+    type Arg;
+}
+
+// MyControl (const OP + ArgType)
+// Vfs::file_control<MyControl>(conn, schema, arg) -> Result<()>
+// connection.file_control<Vfs, MyControl>(schema, arg) -> Result<()>
+// connection.file_control::<MyControl>(schema, args) -> Result<()>
+// .register_file_control::<MyControl>()
+
 /// Implements a custom file control operation for a [`VfsFile`].
 ///
 /// The `OP` parameter must be above 100 (the SQLite reserved range) or the registration will fail.
-pub trait VfsFileControl<const OP: c_int>: VfsFile {
-    /// The type passed to the custom control operation. This can be "()" if no argument is needed.
-    type Target;
-
+pub trait VfsFileControl<T>: VfsFile
+where
+    T: VfsFileControlDefinition,
+    T::Vfs: Vfs<File = Self>,
+{
     /// Performs the custom control operation.
-    fn custom_control(&mut self, arg: Option<&mut Self::Target>) -> Result<()>;
+    fn custom_control(&mut self, arg: Option<&mut T::Arg>) -> Result<()>;
 }
 
 /// Represents file I/O behaviors required to use a write-ahead log with shared-memory support
@@ -1034,32 +1054,30 @@ impl<V> Drop for VfsRegistrationGuard<V> {
 pub struct NoSupport;
 
 #[doc(hidden)]
-pub trait VfsFileControlImpl<T> {
-    fn file_control(file: &mut T, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()>;
+pub trait VfsFileControlImpl<F> {
+    fn file_control(file: &mut F, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()>;
 }
 
-impl<T: VfsFile> VfsFileControlImpl<T> for NoSupport {
-    fn file_control(file: &mut T, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()> {
+impl<F: VfsFile> VfsFileControlImpl<F> for NoSupport {
+    fn file_control(file: &mut F, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()> {
         unsafe { file.file_control(op, arg) }
     }
 }
 
 #[doc(hidden)]
-pub struct FileControlSupport<const OP: c_int, T, B>
-where
-    T: VfsFileControl<OP>,
-    B: VfsFileControlImpl<T>,
-{
-    _marker: PhantomData<(T, B)>,
+pub struct FileControlSupport<D, B> {
+    _marker: PhantomData<(D, B)>,
 }
 
-impl<const OP: c_int, T, B> VfsFileControlImpl<T> for FileControlSupport<OP, T, B>
+impl<F, D, B> VfsFileControlImpl<F> for FileControlSupport<D, B>
 where
-    T: VfsFileControl<OP>,
-    B: VfsFileControlImpl<T>,
+    F: VfsFile + VfsFileControl<D>,
+    D: VfsFileControlDefinition,
+    D::Vfs: Vfs<File = F>,
+    B: VfsFileControlImpl<F>,
 {
-    fn file_control(file: &mut T, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()> {
-        if op == OP {
+    fn file_control(file: &mut F, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()> {
+        if op == D::OP {
             let target = arg.map(|ptr| unsafe { ptr.cast().as_mut() });
             file.custom_control(target)
         } else {
@@ -1346,13 +1364,15 @@ where
     FileControl: VfsFileControlImpl<T::File>,
 {
     /// Enables a custom file control for OP.
-    pub fn with_file_control<const OP: c_int>(
+    pub fn with_file_control<D>(
         self,
-    ) -> VfsRegistration<T, VfsSupport<(T, Wal, Fetch, FileControlSupport<OP, T::File, FileControl>)>>
+    ) -> VfsRegistration<T, VfsSupport<(T, Wal, Fetch, FileControlSupport<D, FileControl>)>>
     where
-        T::File: VfsFileControl<OP>,
+        D: VfsFileControlDefinition,
+        T::File: VfsFileControl<D>,
+        D::Vfs: Vfs<File = T::File>,
     {
-        const { assert!(OP > 100, "Custom control opcodes must be above 100") };
+        const { assert!(D::OP > 100, "Custom control opcodes must be above 100") };
         let Self {
             vfs,
             max_pathlen,
@@ -2341,6 +2361,69 @@ where
     }
 }
 
+// Rust -> C -> Rust
+
+impl Connection {
+    /// Perform a checked and type safe file control operation.
+    pub fn file_control<T: VfsFileControlDefinition>(
+        &self,
+        schema: Option<Named>,
+        arg: Option<&mut T::Arg>,
+    ) -> Result<()> {
+        let handle = unsafe { self.handle() };
+        let schema_ptr = schema.as_deref().map_or(ptr::null(), |s| s.as_ptr());
+
+        let mut file: *mut sqlite3_file = std::ptr::null_mut();
+        let rc = unsafe {
+            sqlite3::sqlite3_file_control(
+                handle,
+                schema_ptr,
+                sqlite3::SQLITE_FCNTL_FILE_POINTER,
+                &mut file as *mut _ as *mut c_void,
+            )
+        };
+        // SQLITE_FCNTL_FILE_POINTER can never fail.
+        assert!(rc == sqlite3::SQLITE_OK && !file.is_null());
+
+        // The file can never be null, but its methods can for temp and memory dbs.
+        let methods = match unsafe { file.as_ref_unchecked().pMethods.as_ref() } {
+            Some(m) => m,
+            None => return Result::from_rc(sqlite3::SQLITE_NOTFOUND),
+        };
+
+        let x_write: unsafe extern "C" fn(*mut sqlite3_file, *const c_void, i32, i64) -> c_int =
+            x_write::<T::Vfs>;
+        match methods.xWrite {
+            Some(func) if ptr::fn_addr_eq(func, x_write) => {}
+            _ => return Result::from_rc(sqlite3::SQLITE_NOTFOUND),
+        };
+
+        unsafe { self.file_control_unchecked(T::OP, schema, arg) }
+    }
+
+    /// Perform an unchecked and type safe file control operation.
+    pub unsafe fn file_control_unchecked<A>(
+        &self,
+        op: c_int,
+        schema: Option<Named>,
+        arg: Option<&mut A>,
+    ) -> Result<()> {
+        let handle = unsafe { self.handle() };
+        let schema_ptr = schema.as_deref().map_or(ptr::null(), |s| s.as_ptr());
+
+        let rc = unsafe {
+            sqlite3::sqlite3_file_control(
+                handle,
+                schema_ptr,
+                op,
+                arg.map_or(ptr::null_mut(), |a| a as *mut _ as *mut c_void),
+            )
+        };
+
+        Result::from_rc(rc)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -2499,20 +2582,30 @@ mod tests {
         }
     }
 
-    impl VfsFileControl<201> for DummyFile {
-        type Target = i32;
+    struct DummyIntFileControl;
+    impl VfsFileControlDefinition for DummyIntFileControl {
+        const OP: c_int = 201;
+        type Vfs = DummyVfs;
+        type Arg = i32;
+    }
 
-        fn custom_control(&mut self, arg: Option<&mut Self::Target>) -> Result<()> {
+    impl VfsFileControl<DummyIntFileControl> for DummyFile {
+        fn custom_control(&mut self, arg: Option<&mut i32>) -> Result<()> {
             let arg = arg.ok_or_else(|| Error::new(sqlite3::SQLITE_MISUSE))?;
             *arg = 201;
             Ok(())
         }
     }
 
-    impl VfsFileControl<202> for DummyFile {
-        type Target = &'static str;
+    struct DummyStrFileControl;
+    impl VfsFileControlDefinition for DummyStrFileControl {
+        const OP: c_int = 202;
+        type Vfs = DummyVfs;
+        type Arg = &'static str;
+    }
 
-        fn custom_control(&mut self, arg: Option<&mut Self::Target>) -> Result<()> {
+    impl VfsFileControl<DummyStrFileControl> for DummyFile {
+        fn custom_control(&mut self, arg: Option<&mut &'static str>) -> Result<()> {
             let arg = arg.ok_or_else(|| Error::new(sqlite3::SQLITE_MISUSE))?;
             *arg = "202";
             Ok(())
@@ -2754,8 +2847,8 @@ mod tests {
         let _token = VfsRegistration::new(DummyVfs)
             .with_wal()
             .with_fetch()
-            .with_file_control::<201>()
-            .with_file_control::<202>()
+            .with_file_control::<DummyIntFileControl>()
+            .with_file_control::<DummyStrFileControl>()
             .register("control")
             .unwrap();
 
@@ -2768,39 +2861,22 @@ mod tests {
         )
         .unwrap();
 
-        let handle = unsafe { conn.handle() };
-        let result = Result::from_rc(unsafe {
-            sqlite3::sqlite3_file_control(handle, std::ptr::null(), 200, std::ptr::null_mut())
-        });
+        // Unsafe, hand-rolled implementation
+        let result = unsafe { conn.file_control_unchecked::<()>(200, None, None) };
         assert_eq!(result, Ok(()));
 
         let mut arg = 0i32;
-        let result = Result::from_rc(unsafe {
-            sqlite3::sqlite3_file_control(
-                handle,
-                std::ptr::null(),
-                201,
-                &mut arg as *mut _ as *mut std::ffi::c_void,
-            )
-        });
+        let result = conn.file_control::<DummyIntFileControl>(None, Some(&mut arg));
         assert_eq!(result, Ok(()));
         assert_eq!(arg, 201);
 
         let mut arg = "";
-        let result = Result::from_rc(unsafe {
-            sqlite3::sqlite3_file_control(
-                handle,
-                std::ptr::null(),
-                202,
-                &mut arg as *mut _ as *mut std::ffi::c_void,
-            )
-        });
+        let result = conn.file_control::<DummyStrFileControl>(None, Some(&mut arg));
         assert_eq!(result, Ok(()));
         assert_eq!(arg, "202");
 
-        let result = Result::from_rc(unsafe {
-            sqlite3::sqlite3_file_control(handle, std::ptr::null(), 203, std::ptr::null_mut())
-        });
+        // Unsafe, non-existent op, should return SQLITE_NOTFOUND
+        let result = unsafe { conn.file_control_unchecked::<()>(203, None, None) };
         assert_eq!(result, Err(Error::new(sqlite3::SQLITE_NOTFOUND)));
     }
 
