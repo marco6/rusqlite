@@ -13,13 +13,15 @@
 #[cfg(all(feature = "memvfs", unix))]
 pub mod memvfs;
 
+use crate::ffi as sqlite3;
 use crate::ffi::{
     sqlite3_file, sqlite3_filename, sqlite3_int64, sqlite3_io_methods, sqlite3_vfs, Error,
 };
-use crate::{ffi as sqlite3, vfs};
-use libsqlite3_sys::{sqlite3_malloc, SQLITE_NOMEM};
+use libsqlite3_sys::sqlite3_malloc;
 use rand::RngCore;
+use std::any::TypeId;
 use std::borrow::Cow;
+use std::error;
 use std::ffi::{c_char, c_int, CStr, CString, OsStr};
 use std::fmt::{self, Display};
 use std::marker::PhantomData;
@@ -31,7 +33,6 @@ use std::sync::atomic::{self, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
-use std::{error, result};
 use std::{mem, slice};
 
 use crate::{Connection, OpenFlags};
@@ -300,6 +301,21 @@ impl<T> OpenFile<T> {
     }
 }
 
+/// Handler for custom file control operations. See [`VfsFile::file_control`].
+pub trait ControlHandler<V: Vfs> {
+    /// Result type for the handler.
+    type Result;
+
+    /// Handles the opcode with a function.
+    fn handle<T: 'static>(
+        &mut self,
+        f: impl Fn(&mut V::File, &mut T) -> Result<()>,
+    ) -> Self::Result;
+
+    /// Handles the case where the file control operation is not found.
+    fn not_found(&mut self) -> Self::Result;
+}
+
 /// Represents the most basic file I/O bahaviours required by a [`Vfs`].
 ///
 /// This trait is optional and corresponds to [`sqlite3_io_methods` v1](https://www.sqlite.org/c3ref/io_methods.html).
@@ -435,7 +451,7 @@ pub trait VfsFile {
         Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
-    /// Completes commit phase two.
+    /// Completes commit mutphase two.
     ///
     /// See [`SQLITE_FCNTL_COMMIT_PHASETWO`](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlcommitphasetwo).
     fn commit_phase_two(&mut self) -> Result<()> {
@@ -557,6 +573,16 @@ pub trait VfsFile {
     fn set_size_limit(&mut self, size: Option<u64>) -> Result<u64> {
         let _ = size;
         Err(Error::new(sqlite3::SQLITE_NOTFOUND))
+    }
+
+    /// Implements a custom file control. Use the [`ControlHandler`] trait to implement this.
+    fn file_control<V, E>(op: c_int, mut executor: E) -> E::Result
+    where
+        V: Vfs<File = Self>,
+        E: ControlHandler<V>,
+    {
+        let _ = op;
+        executor.not_found()
     }
 }
 
@@ -2113,8 +2139,47 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         // Newer codes that we don't need to handle yet
         fcntl if fcntl <= 100 => sqlite3::SQLITE_NOTFOUND,
 
-        // TODO: allow extensions to handle custom opcodes
-        _ => sqlite3::SQLITE_NOTFOUND,
+        op => {
+            struct Handler<'a, F> {
+                file: &'a mut F,
+                arg: *mut c_void,
+                called: bool,
+            }
+
+            impl<V: Vfs> ControlHandler<V> for Handler<'_, V::File> {
+                type Result = Result<()>;
+
+                fn handle<T>(
+                    &mut self,
+                    f: impl Fn(&mut <V as Vfs>::File, &mut T) -> Result<()>,
+                ) -> Self::Result {
+                    self.called = true;
+                    let arg = self.arg as *mut T;
+                    f(self.file, unsafe { &mut *arg })?;
+                    Ok(())
+                }
+
+                fn not_found(&mut self) -> Self::Result {
+                    self.called = true;
+                    Err(Error::new(sqlite3::SQLITE_NOTFOUND))
+                }
+            }
+
+            impl<F> Drop for Handler<'_, F> {
+                fn drop(&mut self) {
+                    if !self.called {
+                        panic!("internal error: file control handler was not called");
+                    }
+                }
+            }
+
+            let handler = Handler {
+                file,
+                arg,
+                called: false,
+            };
+            T::File::file_control::<T, _>(op, handler).into_rc()
+        }
     }
 }
 
@@ -2250,6 +2315,67 @@ where
     }
 }
 
+impl Connection {
+    /// Perform a file control operation on the underlying VFS file.
+    ///
+    /// TODO: this should have a db name parameter, but I didn't implement it yet.
+    pub fn file_control<V: Vfs, T: 'static>(&self, op: i32, arg: &mut T) -> Result<()> {
+        struct Handler<'a, T> {
+            conn: *mut sqlite3::sqlite3,
+            op: i32,
+            arg: &'a mut T,
+        }
+
+        impl<'a, T1: 'static, V: Vfs> ControlHandler<V> for Handler<'a, T1> {
+            type Result = Result<()>;
+
+            fn handle<T2: 'static>(
+                &mut self,
+                _f: impl Fn(&mut V::File, &mut T2) -> Result<()>,
+            ) -> Self::Result {
+                if TypeId::of::<T1>() != TypeId::of::<T2>() {
+                    return Err(Error::new(sqlite3::SQLITE_MISUSE));
+                }
+
+                // Now check if the file is from the right VFS.
+                let mut vfs: *mut sqlite3::sqlite3_vfs = std::ptr::null_mut();
+                Result::from_rc(unsafe {
+                    sqlite3::sqlite3_file_control(
+                        self.conn,
+                        std::ptr::null(),
+                        sqlite3::SQLITE_FCNTL_VFS_POINTER,
+                        &mut vfs as *mut _ as *mut c_void,
+                    )
+                })
+                .unwrap();
+                assert!(!vfs.is_null());
+                let x_open: unsafe extern "C" fn(_, _, _, _) -> _ = x_access::<V>;
+                match unsafe { (*vfs).xAccess } {
+                    Some(f) if std::ptr::fn_addr_eq(f, x_open) => {}
+                    _ => return Err(Error::new(sqlite3::SQLITE_MISUSE)),
+                };
+
+                // Call the real file control function.
+                Result::from_rc(unsafe {
+                    sqlite3::sqlite3_file_control(
+                        self.conn,
+                        std::ptr::null(),
+                        self.op,
+                        self.arg as *mut _ as *mut c_void,
+                    )
+                })
+            }
+
+            fn not_found(&mut self) -> Self::Result {
+                Err(Error::new(sqlite3::SQLITE_NOTFOUND))
+            }
+        }
+
+        let conn = unsafe { self.handle() };
+        V::File::file_control::<V, _>(op, Handler { conn, op, arg })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -2312,6 +2438,22 @@ mod tests {
 
     struct DummyFile;
 
+    impl DummyFile {
+        fn str_file_control(&mut self, arg: &mut &'static str) -> Result<()> {
+            *arg = "dummy";
+            Ok(())
+        }
+
+        fn int_file_control(&mut self, arg: &mut i32) -> Result<()> {
+            *arg = 42;
+            Ok(())
+        }
+
+        fn noop_file_control(&mut self, _arg: &mut ()) -> Result<()> {
+            Ok(())
+        }
+    }
+
     impl VfsFile for DummyFile {
         fn read_at(&mut self, buf: &mut [u8], _offset: u64) -> Result<usize> {
             buf.fill(0);
@@ -2360,6 +2502,19 @@ mod tests {
 
         fn io_capabilities(&self) -> IoCapabilities {
             IoCapabilities::default()
+        }
+
+        fn file_control<V, E>(op: c_int, mut executor: E) -> E::Result
+        where
+            V: Vfs<File = Self>,
+            E: ControlHandler<V>,
+        {
+            match op {
+                201 => executor.handle(Self::str_file_control),
+                202 => executor.handle(Self::int_file_control),
+                203 => executor.handle(Self::noop_file_control),
+                _ => executor.not_found(),
+            }
         }
     }
 
@@ -2473,6 +2628,37 @@ mod tests {
         assert!(methods.xShmUnmap.is_none());
         assert!(methods.xFetch.is_none());
         assert!(methods.xUnfetch.is_none());
+        drop(token);
+    }
+
+    #[test]
+    fn test_file_control() {
+        let token = VfsRegistration::new(DummyVfs).register("base").unwrap();
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let db_path = tempdir.path().join("test.db");
+        let conn = Connection::open_with_flags_and_vfs(
+            db_path.to_str().unwrap(),
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+            "base",
+        )
+        .unwrap();
+
+        let mut str_arg = "";
+        conn.file_control::<DummyVfs, _>(201, &mut str_arg).unwrap();
+        assert_eq!(str_arg, "dummy");
+        conn.file_control::<DummyVfs, _>(201, &mut ())
+            .expect_err("expected error for wrong type for file control op");
+
+        let mut int_arg = 0;
+        conn.file_control::<DummyVfs, _>(202, &mut int_arg).unwrap();
+        assert_eq!(int_arg, 42);
+
+        conn.file_control::<DummyVfs, _>(203, &mut ()).unwrap();
+
+        conn.file_control::<DummyVfs, _>(204, &mut ())
+            .expect_err("expected error for unknown file control op");
+
         drop(token);
     }
 
