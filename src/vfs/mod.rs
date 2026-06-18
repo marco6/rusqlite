@@ -13,14 +13,13 @@
 #[cfg(all(feature = "memvfs", unix))]
 pub mod memvfs;
 
-use crate::ffi as sqlite3;
 use crate::ffi::{
     sqlite3_file, sqlite3_filename, sqlite3_int64, sqlite3_io_methods, sqlite3_vfs, Error,
 };
-use libsqlite3_sys::sqlite3_malloc;
+use crate::{ffi as sqlite3, vfs};
+use libsqlite3_sys::{sqlite3_malloc, SQLITE_NOMEM};
 use rand::RngCore;
 use std::borrow::Cow;
-use std::error;
 use std::ffi::{c_char, c_int, CStr, CString, OsStr};
 use std::fmt::{self, Display};
 use std::marker::PhantomData;
@@ -32,6 +31,7 @@ use std::sync::atomic::{self, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
+use std::{error, result};
 use std::{mem, slice};
 
 use crate::{Connection, OpenFlags};
@@ -564,7 +564,7 @@ pub trait VfsFile {
     /// This is a "fallback", catch all method for file control operations that are not implemented
     /// by the other methods. As such `op` is always above 100 (i.e. outside the sqlite reserved range)
     /// and is never one of the opcodes that were registered with [`VfsRegistration::with_file_control`].
-    unsafe fn file_control(&mut self, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()> {
+    unsafe fn file_control(&mut self, op: c_int, arg: *mut c_void) -> Result<()> {
         let _ = op;
         let _ = arg;
         Err(Error::new(sqlite3::SQLITE_NOTFOUND))
@@ -650,17 +650,6 @@ impl BusyHandler {
         let rc = (self.handler)(self.arg);
         rc != 0
     }
-}
-
-/// Implements a custom file control operation for a [`VfsFile`].
-///
-/// The `OP` parameter must be above 100 (the SQLite reserved range) or the registration will fail.
-pub trait VfsFileControl<const OP: c_int>: VfsFile {
-    /// The type passed to the custom control operation. This can be "()" if no argument is needed.
-    type Target;
-
-    /// Performs the custom control operation.
-    fn custom_control(&mut self, arg: Option<&mut Self::Target>) -> Result<()>;
 }
 
 /// Represents file I/O behaviors required to use a write-ahead log with shared-memory support
@@ -1030,43 +1019,8 @@ impl<V> Drop for VfsRegistrationGuard<V> {
     }
 }
 
-#[doc(hidden)]
+/// Represents a lack of support for a category of file I/O methods.
 pub struct NoSupport;
-
-#[doc(hidden)]
-pub trait VfsFileControlImpl<T> {
-    fn file_control(file: &mut T, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()>;
-}
-
-impl<T: VfsFile> VfsFileControlImpl<T> for NoSupport {
-    fn file_control(file: &mut T, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()> {
-        unsafe { file.file_control(op, arg) }
-    }
-}
-
-#[doc(hidden)]
-pub struct FileControlSupport<const OP: c_int, T, B>
-where
-    T: VfsFileControl<OP>,
-    B: VfsFileControlImpl<T>,
-{
-    _marker: PhantomData<(T, B)>,
-}
-
-impl<const OP: c_int, T, B> VfsFileControlImpl<T> for FileControlSupport<OP, T, B>
-where
-    T: VfsFileControl<OP>,
-    B: VfsFileControlImpl<T>,
-{
-    fn file_control(file: &mut T, op: c_int, arg: Option<NonNull<c_void>>) -> Result<()> {
-        if op == OP {
-            let target = arg.map(|ptr| unsafe { ptr.cast().as_mut() });
-            file.custom_control(target)
-        } else {
-            B::file_control(file, op, arg)
-        }
-    }
-}
 
 /// Stores info the I/O method categories supported by a [`Vfs`].
 pub struct VfsSupport<S> {
@@ -1082,10 +1036,9 @@ pub trait VfsMethodTableExt {
 }
 
 // Base implementation without WAL and Fetch support.
-impl<T, C> VfsSupport<(T, NoSupport, NoSupport, C)>
+impl<T> VfsSupport<(T, NoSupport, NoSupport)>
 where
     T: Vfs,
-    C: VfsFileControlImpl<T::File>,
 {
     const fn methods() -> sqlite3_io_methods {
         sqlite3_io_methods {
@@ -1099,7 +1052,7 @@ where
             xLock: Some(x_lock::<T>),
             xUnlock: Some(x_unlock::<T>),
             xCheckReservedLock: Some(x_check_reserved_lock::<T>),
-            xFileControl: Some(x_file_control::<T, C>),
+            xFileControl: Some(x_file_control::<T>),
             xSectorSize: Some(x_sector_size::<T>),
             xDeviceCharacteristics: Some(x_device_characteristics::<T>),
 
@@ -1116,23 +1069,21 @@ where
     }
 }
 
-impl<T, C> VfsMethodTableExt for VfsSupport<(T, NoSupport, NoSupport, C)>
+impl<T> VfsMethodTableExt for VfsSupport<(T, NoSupport, NoSupport)>
 where
     T: Vfs,
-    C: VfsFileControlImpl<T::File>,
 {
     const METHODS: sqlite3_io_methods = Self::methods();
 }
 
 // Wal support implementation
-impl<T, F, C> VfsSupport<(T, F, NoSupport, C)>
+impl<T, F> VfsSupport<(T, F, NoSupport)>
 where
     T: Vfs<File = F>,
     F: VfsWalFile,
-    C: VfsFileControlImpl<T::File>,
 {
     const fn methods() -> sqlite3_io_methods {
-        let mut methods = VfsSupport::<(T, NoSupport, NoSupport, C)>::methods();
+        let mut methods = VfsSupport::<(T, NoSupport, NoSupport)>::methods();
         methods.iVersion = 2;
         methods.xShmMap = Some(x_shm_map::<T, F>);
         methods.xShmLock = Some(x_shm_lock::<T, F>);
@@ -1142,24 +1093,22 @@ where
     }
 }
 
-impl<T, F, C> VfsMethodTableExt for VfsSupport<(T, F, NoSupport, C)>
+impl<T, F> VfsMethodTableExt for VfsSupport<(T, F, NoSupport)>
 where
     T: Vfs<File = F>,
     F: VfsWalFile,
-    C: VfsFileControlImpl<T::File>,
 {
     const METHODS: sqlite3_io_methods = Self::methods();
 }
 
 // Fetch support implementation
-impl<T, F, C> VfsSupport<(T, NoSupport, F, C)>
+impl<T, F> VfsSupport<(T, NoSupport, F)>
 where
     T: Vfs<File = F>,
     F: VfsFetchFile,
-    C: VfsFileControlImpl<T::File>,
 {
     const fn methods() -> sqlite3_io_methods {
-        let mut methods = VfsSupport::<(T, NoSupport, NoSupport, C)>::methods();
+        let mut methods = VfsSupport::<(T, NoSupport, NoSupport)>::methods();
         methods.iVersion = 3;
         methods.xFetch = Some(x_fetch::<T, F>);
         methods.xUnfetch = Some(x_unfetch::<T, F>);
@@ -1167,23 +1116,21 @@ where
     }
 }
 
-impl<T, F, C> VfsMethodTableExt for VfsSupport<(T, NoSupport, F, C)>
+impl<T, F> VfsMethodTableExt for VfsSupport<(T, NoSupport, F)>
 where
     T: Vfs<File = F>,
     F: VfsFetchFile,
-    C: VfsFileControlImpl<T::File>,
 {
     const METHODS: sqlite3_io_methods = Self::methods();
 }
 
-impl<T, F, C> VfsSupport<(T, F, F, C)>
+impl<T, F> VfsSupport<(T, F, F)>
 where
     T: Vfs<File = F>,
     F: VfsFetchFile + VfsWalFile,
-    C: VfsFileControlImpl<T::File>,
 {
     const fn methods() -> sqlite3_io_methods {
-        let mut methods = VfsSupport::<(T, F, NoSupport, C)>::methods();
+        let mut methods = VfsSupport::<(T, F, NoSupport)>::methods();
         methods.iVersion = 3;
         methods.xFetch = Some(x_fetch::<T, F>);
         methods.xUnfetch = Some(x_unfetch::<T, F>);
@@ -1191,11 +1138,10 @@ where
     }
 }
 
-impl<T, F, C> VfsMethodTableExt for VfsSupport<(T, F, F, C)>
+impl<T, F> VfsMethodTableExt for VfsSupport<(T, F, F)>
 where
     T: Vfs<File = F>,
     F: VfsFetchFile + VfsWalFile,
-    C: VfsFileControlImpl<T::File>,
 {
     const METHODS: sqlite3_io_methods = Self::methods();
 }
@@ -1208,7 +1154,7 @@ pub struct VfsRegistration<T, M> {
     method_table: PhantomData<M>,
 }
 
-impl<T: Vfs> VfsRegistration<T, VfsSupport<(T, NoSupport, NoSupport, NoSupport)>> {
+impl<T: Vfs> VfsRegistration<T, VfsSupport<(T, NoSupport, NoSupport)>> {
     /// Creates a new VFS registration builder.
     pub fn new(vfs: T) -> Self {
         Self {
@@ -1299,12 +1245,12 @@ impl<T, M> VfsRegistration<T, M> {
     }
 }
 
-impl<T: Vfs, Wal, FileControl> VfsRegistration<T, VfsSupport<(T, Wal, NoSupport, FileControl)>>
+impl<T: Vfs, Wal> VfsRegistration<T, VfsSupport<(T, Wal, NoSupport)>>
 where
     T::File: VfsFetchFile,
 {
     /// Enables fetch support (io_methods v3).
-    pub fn with_fetch(self) -> VfsRegistration<T, VfsSupport<(T, Wal, T::File, FileControl)>> {
+    pub fn with_fetch(self) -> VfsRegistration<T, VfsSupport<(T, Wal, T::File)>> {
         let Self {
             vfs,
             max_pathlen,
@@ -1320,39 +1266,12 @@ where
     }
 }
 
-impl<T: Vfs, Fetch, FileControl> VfsRegistration<T, VfsSupport<(T, NoSupport, Fetch, FileControl)>>
+impl<T: Vfs, Fetch> VfsRegistration<T, VfsSupport<(T, NoSupport, Fetch)>>
 where
     T::File: VfsWalFile,
 {
     /// Enables WAL support (io_methods v2).
-    pub fn with_wal(self) -> VfsRegistration<T, VfsSupport<(T, T::File, Fetch, FileControl)>> {
-        let Self {
-            vfs,
-            max_pathlen,
-            make_default,
-            method_table: _,
-        } = self;
-        VfsRegistration {
-            vfs,
-            max_pathlen,
-            make_default,
-            method_table: PhantomData,
-        }
-    }
-}
-
-impl<T: Vfs, Wal, Fetch, FileControl> VfsRegistration<T, VfsSupport<(T, Wal, Fetch, FileControl)>>
-where
-    FileControl: VfsFileControlImpl<T::File>,
-{
-    /// Enables a custom file control for OP.
-    pub fn with_file_control<const OP: c_int>(
-        self,
-    ) -> VfsRegistration<T, VfsSupport<(T, Wal, Fetch, FileControlSupport<OP, T::File, FileControl>)>>
-    where
-        T::File: VfsFileControl<OP>,
-    {
-        const { assert!(OP > 100, "Custom control opcodes must be above 100") };
+    pub fn with_wal(self) -> VfsRegistration<T, VfsSupport<(T, T::File, Fetch)>> {
         let Self {
             vfs,
             max_pathlen,
@@ -1922,7 +1841,7 @@ unsafe fn strdup(str: &[u8]) -> Result<NonNull<u8>> {
     Ok(ret)
 }
 
-unsafe extern "C" fn x_file_control<T: Vfs, C: VfsFileControlImpl<T::File>>(
+unsafe extern "C" fn x_file_control<T: Vfs>(
     file: *mut sqlite3_file,
     op: c_int,
     arg: *mut c_void,
@@ -2205,7 +2124,9 @@ unsafe extern "C" fn x_file_control<T: Vfs, C: VfsFileControlImpl<T::File>>(
         // Newer codes that we don't need to handle yet
         fcntl if fcntl <= 100 => sqlite3::SQLITE_NOTFOUND,
 
-        _ => C::file_control(file, op, NonNull::new(arg)).into_rc(),
+        op => {
+            file.file_control(op, arg).into_rc()
+        },
     }
 }
 
@@ -2452,14 +2373,6 @@ mod tests {
         fn io_capabilities(&self) -> IoCapabilities {
             IoCapabilities::default()
         }
-
-        unsafe fn file_control(&mut self, op: c_int, _arg: Option<NonNull<c_void>>) -> Result<()> {
-            if op == 200 {
-                Ok(())
-            } else {
-                Err(Error::new(sqlite3::SQLITE_NOTFOUND))
-            }
-        }
     }
 
     impl VfsWalFile for DummyFile {
@@ -2496,26 +2409,6 @@ mod tests {
 
         fn unfetch_all(&mut self) -> Result<()> {
             Err(Error::new(sqlite3::SQLITE_ERROR))
-        }
-    }
-
-    impl VfsFileControl<201> for DummyFile {
-        type Target = i32;
-
-        fn custom_control(&mut self, arg: Option<&mut Self::Target>) -> Result<()> {
-            let arg = arg.ok_or_else(|| Error::new(sqlite3::SQLITE_MISUSE))?;
-            *arg = 201;
-            Ok(())
-        }
-    }
-
-    impl VfsFileControl<202> for DummyFile {
-        type Target = &'static str;
-
-        fn custom_control(&mut self, arg: Option<&mut Self::Target>) -> Result<()> {
-            let arg = arg.ok_or_else(|| Error::new(sqlite3::SQLITE_MISUSE))?;
-            *arg = "202";
-            Ok(())
         }
     }
 
@@ -2747,61 +2640,6 @@ mod tests {
         assert!(methods.xFetch.is_some());
         assert!(methods.xUnfetch.is_some());
         drop(token);
-    }
-
-    #[test]
-    fn test_file_control_methods() {
-        let _token = VfsRegistration::new(DummyVfs)
-            .with_wal()
-            .with_fetch()
-            .with_file_control::<201>()
-            .with_file_control::<202>()
-            .register("control")
-            .unwrap();
-
-        let tempdir = tempfile::tempdir().unwrap();
-        let db_path = tempdir.path().join("test.db");
-        let conn = Connection::open_with_flags_and_vfs(
-            db_path.to_str().unwrap(),
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-            "control",
-        )
-        .unwrap();
-
-        let handle = unsafe { conn.handle() };
-        let result = Result::from_rc(unsafe {
-            sqlite3::sqlite3_file_control(handle, std::ptr::null(), 200, std::ptr::null_mut())
-        });
-        assert_eq!(result, Ok(()));
-
-        let mut arg = 0i32;
-        let result = Result::from_rc(unsafe {
-            sqlite3::sqlite3_file_control(
-                handle,
-                std::ptr::null(),
-                201,
-                &mut arg as *mut _ as *mut std::ffi::c_void,
-            )
-        });
-        assert_eq!(result, Ok(()));
-        assert_eq!(arg, 201);
-
-        let mut arg = "";
-        let result = Result::from_rc(unsafe {
-            sqlite3::sqlite3_file_control(
-                handle,
-                std::ptr::null(),
-                202,
-                &mut arg as *mut _ as *mut std::ffi::c_void,
-            )
-        });
-        assert_eq!(result, Ok(()));
-        assert_eq!(arg, "202");
-
-        let result = Result::from_rc(unsafe {
-            sqlite3::sqlite3_file_control(handle, std::ptr::null(), 203, std::ptr::null_mut())
-        });
-        assert_eq!(result, Err(Error::new(sqlite3::SQLITE_NOTFOUND)));
     }
 
     #[test]
