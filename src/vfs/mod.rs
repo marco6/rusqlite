@@ -559,10 +559,9 @@ pub trait VfsFile {
         Err(Error::new(sqlite3::SQLITE_NOTFOUND))
     }
 
-    /// Implements low level custom file control operations.
+    /// Implements low-level custom file control operations.
     ///
-    /// This is a "fallback", catch all method for file control operations that are not implemented
-    /// by the other methods. As such `op` is always above 100 (i.e. outside the sqlite reserved range)
+    /// This is used for operations outside of the sqlite reserved range, hence `op` is always greater than 100.
     /// and is never one of the opcodes that were registered with [`VfsRegistration::with_file_control`].
     unsafe fn file_control(&mut self, op: c_int, arg: *mut c_void) -> Result<()> {
         let _ = op;
