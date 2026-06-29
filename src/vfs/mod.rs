@@ -562,7 +562,6 @@ pub trait VfsFile {
     /// Implements low-level custom file control operations.
     ///
     /// This is used for operations outside of the sqlite reserved range, hence `op` is always greater than 100.
-    /// and is never one of the opcodes that were registered with [`VfsRegistration::with_file_control`].
     unsafe fn file_control(&mut self, op: c_int, arg: *mut c_void) -> Result<()> {
         let _ = op;
         let _ = arg;
@@ -2123,9 +2122,7 @@ unsafe extern "C" fn x_file_control<T: Vfs>(
         // Newer codes that we don't need to handle yet
         fcntl if fcntl <= 100 => sqlite3::SQLITE_NOTFOUND,
 
-        op => {
-            file.file_control(op, arg).into_rc()
-        },
+        op => file.file_control(op, arg).into_rc(),
     }
 }
 
